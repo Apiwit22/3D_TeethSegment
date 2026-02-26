@@ -1,0 +1,15 @@
+PySide6>=6.6
+pyvista>=0.43
+pyvistaqt>=0.11
+vtk>=9.2
+
+numpy>=1.23
+pyyaml>=6.0
+
+torch>=2.0
+trimesh>=4.0
+plyfile>=1.0
+pymeshlab>=2023.12
+scipy>=1.9
+# optional (ถ้าไม่มี scipy แล้วอยาก fallback knn ด้วย sklearn)
+# scikit-learn>=1.2
