@@ -20,6 +20,9 @@ __pycache__/
 3D_Project/dataset_split_face/
 3D_Project/configs/
 3D_Project/checkpoints/
+3D_Project/*.egg-info/
+3D_Project/iosseg3d.egg-info/
+3D_Project/src/iosseg3d.egg-info/
 
 3D_Project/mesh_label_colorizer/data/colored_ready
 3D_Project/mesh_label_colorizer/data/labels_remap
