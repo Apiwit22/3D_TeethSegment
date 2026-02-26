@@ -1,0 +1,1 @@
+code นี้ใช้ใส่สีเเละเเปลงobj ให้เป็น ply ให้กับ public data data_partxx 

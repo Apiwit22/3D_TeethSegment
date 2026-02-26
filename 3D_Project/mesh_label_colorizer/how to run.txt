@@ -1,0 +1,40 @@
+python -m venv venv
+venv\Scripts\activate
+pip install -U pip
+pip install numpy trimesh
+
+
+
+
+
+----RUN---------------------------------------------------
+venv\Scripts\activate
+
+pip install numpy trimesh scipy fast-simplification
+------------------------------------------------------------
+python scripts/remesh_to_16k.py --jaw lower
+python scripts/remesh_to_16k.py --jaw upper
+ผลลัพธ์:
+data/remeshed/lower/<CASE>/*_16k.obj
+data/remeshed/upper/<CASE>/*_16k.obj
+------------------------------------------------------------
+python scripts/map_labels_to_remesh.py --jaw lower
+python scripts/map_labels_to_remesh.py --jaw upper
+ผลลัพธ์:
+data/labels_remap/lower/<CASE>/*_16k.json
+data/labels_remap/upper/<CASE>/*_16k.json
+------------------------------------------------------------
+python batch_colorize.py ^
+  --labels-root data/labels_remap ^
+  --meshes-root data/remeshed ^
+  --out-root data/colored_ready ^
+  --colors configs/fdi_colors_rgb.json
+ผลลัพธ์สุดท้าย:
+data/colored_ready/
+├─ lower/<CASE>/*_lower_16k_colored.ply
+└─ upper/<CASE>/*_upper_16k_colored.ply
+-------------------------------------------------------------
+
+run  ทีเดียว python run_all_jaws_pipeline.py
+
+
