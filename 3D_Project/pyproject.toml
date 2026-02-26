@@ -1,0 +1,17 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "iosseg3d"
+version = "0.0.0"
+description = "3D tooth segmentation utilities (training/inference) for IoSSeg project"
+requires-python = ">=3.9"
+dependencies = []
+
+[tool.setuptools]
+package-dir = {"" = "."}
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["src*"]
