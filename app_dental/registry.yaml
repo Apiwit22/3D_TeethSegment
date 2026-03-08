@@ -1,12 +1,10 @@
 presets:
   # =========================================================
-  # MeshSegNet (Face) - Ensemble dataset1..5 (Best รวม 5 datasets)
+  # MeshSegNet (Face)
   # =========================================================
   meshsegnet_upper:
     arch: upper
     runner: meshsegnet
-
-    # (สำคัญ) ต้องเป็น "pkg.mod:ClassName"
     model_import: app.models.meshsegnet_repo_wrapper:MeshSegNetBatch
     model_kwargs:
       num_classes: 17
@@ -16,7 +14,6 @@ presets:
       with_dropout: true
       dropout_p: 0.5
 
-    # keep deterministic faces for export + postprocess
     target_faces: 16000
     do_orient: true
     do_normalize: true
@@ -24,8 +21,13 @@ presets:
     ref_path: assets/ref/007_U.ply
 
     do_postprocess: true
+    pp_mode: best_visual
     pp_knn_k: 16
-    pp_smooth_iters: 1
+    pp_conf_thresh: 0.60
+    pp_conf_neighbor_iters: 1
+    pp_min_comp_size: 30
+    pp_clean_iters: 1
+    pp_smooth_iters: 0
     pp_ungingiva_margin: 0.05
     pp_ungingiva_min_tooth_p: 0.12
     pp_keep_gingiva_lcc: true
@@ -40,7 +42,6 @@ presets:
   meshsegnet_lower:
     arch: lower
     runner: meshsegnet
-
     model_import: app.models.meshsegnet_repo_wrapper:MeshSegNetBatch
     model_kwargs:
       num_classes: 17
@@ -57,8 +58,13 @@ presets:
     ref_path: assets/ref/007_L.ply
 
     do_postprocess: true
+    pp_mode: best_visual
     pp_knn_k: 16
-    pp_smooth_iters: 1
+    pp_conf_thresh: 0.60
+    pp_conf_neighbor_iters: 1
+    pp_min_comp_size: 30
+    pp_clean_iters: 1
+    pp_smooth_iters: 0
     pp_ungingiva_margin: 0.05
     pp_ungingiva_min_tooth_p: 0.12
     pp_keep_gingiva_lcc: true
@@ -71,23 +77,28 @@ presets:
       - models/builtin/meshsegnet/lower/dataset5_best.pth
 
   # =========================================================
-  # PointNet++ (Point) - Ensemble dataset1..5 (Best รวม 5 datasets)
+  # PointNet++ (Point)
   # =========================================================
   pointnetpp_upper:
     arch: upper
     runner: pointnetpp
-
     model_import: app.models.pointnetpp:PointNet2Seg
     model_kwargs:
       in_channels: 6
       num_classes: 17
       sa_npoints: [2048, 512, 128]
-      sa_radii:   [0.05, 0.10, 0.20]
+      sa_radii: [0.05, 0.10, 0.20]
       sa_nsamples: [32, 32, 32]
       dropout: 0.5
 
-    num_points: 4096
+    num_points: 8192
     point_feature: xyz_n
+
+    pt_deterministic_sampling: true
+    pt_sample_seed: 1234
+    pt_mc_passes: 2
+    pt_cover_faces: true
+    pt_cover_jitter: 0.0
 
     target_faces: 16000
     do_orient: true
@@ -96,7 +107,12 @@ presets:
     ref_path: assets/ref/007_U.ply
 
     do_postprocess: true
+    pp_mode: best_visual
     pp_knn_k: 16
+    pp_conf_thresh: 0.60
+    pp_conf_neighbor_iters: 1
+    pp_min_comp_size: 30
+    pp_clean_iters: 1
     pp_smooth_iters: 1
     pp_ungingiva_margin: 0.05
     pp_ungingiva_min_tooth_p: 0.12
@@ -112,18 +128,23 @@ presets:
   pointnetpp_lower:
     arch: lower
     runner: pointnetpp
-
     model_import: app.models.pointnetpp:PointNet2Seg
     model_kwargs:
       in_channels: 6
       num_classes: 17
       sa_npoints: [2048, 512, 128]
-      sa_radii:   [0.05, 0.10, 0.20]
+      sa_radii: [0.05, 0.10, 0.20]
       sa_nsamples: [32, 32, 32]
       dropout: 0.5
 
-    num_points: 4096
+    num_points: 8192
     point_feature: xyz_n
+
+    pt_deterministic_sampling: true
+    pt_sample_seed: 1234
+    pt_mc_passes: 2
+    pt_cover_faces: true
+    pt_cover_jitter: 0.0
 
     target_faces: 16000
     do_orient: true
@@ -132,7 +153,12 @@ presets:
     ref_path: assets/ref/007_L.ply
 
     do_postprocess: true
+    pp_mode: best_visual
     pp_knn_k: 16
+    pp_conf_thresh: 0.60
+    pp_conf_neighbor_iters: 1
+    pp_min_comp_size: 30
+    pp_clean_iters: 1
     pp_smooth_iters: 1
     pp_ungingiva_margin: 0.05
     pp_ungingiva_min_tooth_p: 0.12
@@ -144,3 +170,76 @@ presets:
       - models/builtin/pointnetpp/lower/dataset3_best.pth
       - models/builtin/pointnetpp/lower/dataset4_best.pth
       - models/builtin/pointnetpp/lower/dataset5_best.pth
+
+  # =========================================================
+  # ✅ TS-MDL / iMeshSegNetKNNBatch (Face) via TSMdlRunner
+  # =========================================================
+  tsmdl_upper:
+    arch: upper
+    runner: tsmdl
+    model_import: app.models.imeshsegnet_knn2:IMeshSegNetKNNBatch
+    model_kwargs:
+      num_classes: 17
+      in_channels: 15
+      # ใส่ kwargs เฉพาะโมเดล ถ้ามี (ตาม __init__ ของคุณ)
+      # knn_s: 6
+      # knn_l: 12
+      # dropout_p: 0.3
+
+    target_faces: 16000
+    do_orient: true
+    do_normalize: true
+    allow_reflection: false
+    ref_path: assets/ref/007_U.ply
+
+    do_postprocess: true
+    pp_mode: best_visual
+    pp_knn_k: 16
+    pp_conf_thresh: 0.60
+    pp_conf_neighbor_iters: 1
+    pp_min_comp_size: 30
+    pp_clean_iters: 1
+    pp_smooth_iters: 0
+    pp_ungingiva_margin: 0.05
+    pp_ungingiva_min_tooth_p: 0.12
+    pp_keep_gingiva_lcc: true
+
+    ckpts:
+      - models/builtin/tsmdl/upper/dataset1_best.pth
+      - models/builtin/tsmdl/upper/dataset2_best.pth
+      - models/builtin/tsmdl/upper/dataset3_best.pth
+      - models/builtin/tsmdl/upper/dataset4_best.pth
+      - models/builtin/tsmdl/upper/dataset5_best.pth
+
+  tsmdl_lower:
+    arch: lower
+    runner: tsmdl
+    model_import: app.models.imeshsegnet_knn2:IMeshSegNetKNNBatch
+    model_kwargs:
+      num_classes: 17
+      in_channels: 15
+
+    target_faces: 16000
+    do_orient: true
+    do_normalize: true
+    allow_reflection: false
+    ref_path: assets/ref/007_L.ply
+
+    do_postprocess: true
+    pp_mode: best_visual
+    pp_knn_k: 16
+    pp_conf_thresh: 0.60
+    pp_conf_neighbor_iters: 1
+    pp_min_comp_size: 30
+    pp_clean_iters: 1
+    pp_smooth_iters: 0
+    pp_ungingiva_margin: 0.05
+    pp_ungingiva_min_tooth_p: 0.12
+    pp_keep_gingiva_lcc: true
+
+    ckpts:
+      - models/builtin/tsmdl/lower/dataset1_best.pth
+      - models/builtin/tsmdl/lower/dataset2_best.pth
+      - models/builtin/tsmdl/lower/dataset3_best.pth
+      - models/builtin/tsmdl/lower/dataset4_best.pth
+      - models/builtin/tsmdl/lower/dataset5_best.pth
