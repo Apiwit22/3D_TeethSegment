@@ -1,4 +1,4 @@
-# dental_seg_app/app/data/postprocess.py
+# app/data/postprocess.py
 from __future__ import annotations
 
 from collections import deque
@@ -141,6 +141,156 @@ def ungingiva_by_margin(
     return y
 
 
+# ============================================================
+# ✅ NEW: low-confidence neighbor fill (Policy C)
+# ============================================================
+def fill_lowconf_by_neighbors(
+    labels: np.ndarray,
+    probs: np.ndarray | None,
+    nbr: np.ndarray,
+    *,
+    num_classes: int,
+    conf_thresh: float = 0.60,
+    iters: int = 1,
+    ignore_index: int = -1,
+) -> np.ndarray:
+    """
+    Policy C:
+    - compute conf = max(probs)
+    - for faces with conf < conf_thresh, replace label with neighbor majority
+      (prefer neighbors that are not low-conf)
+    """
+    y = np.asarray(labels, dtype=np.int64).copy()
+    if probs is None:
+        return y
+
+    P = np.asarray(probs, dtype=np.float32)
+    if P.ndim != 2 or P.shape[1] != int(num_classes):
+        return y
+
+    nbr = np.asarray(nbr, dtype=np.int64)
+    conf = np.max(P, axis=1)
+    low = conf < float(conf_thresh)
+
+    if not np.any(low):
+        return y
+
+    num_classes = int(num_classes)
+    iters = int(iters)
+
+    for _ in range(max(iters, 0)):
+        y2 = y.copy()
+        for i in np.where(low)[0]:
+            if int(y[i]) == ignore_index:
+                continue
+            nn = nbr[i]
+
+            # prefer neighbors that are not low-conf
+            nn_good = [j for j in nn if (not low[j]) and (int(y[j]) != ignore_index)]
+            src = nn_good if nn_good else [j for j in nn if int(y[j]) != ignore_index]
+            if not src:
+                continue
+
+            votes = np.zeros((num_classes,), dtype=np.int32)
+            for j in src:
+                votes[int(y[j])] += 1
+            y2[i] = int(np.argmax(votes))
+        y = y2
+
+    return y
+
+
+# ============================================================
+# ✅ NEW: cleanup tiny components for ALL labels
+# ============================================================
+def cleanup_small_components_all_labels(
+    labels: np.ndarray,
+    nbr: np.ndarray,
+    *,
+    num_classes: int,
+    min_size: int = 20,
+    iters: int = 1,
+    ignore_index: int = -1,
+) -> np.ndarray:
+    """
+    Remove small connected components for every label:
+      - find connected components under nbr graph for each label
+      - if component size < min_size:
+          reassign to boundary neighbor majority (labels outside component)
+    """
+    y = np.asarray(labels, dtype=np.int64).copy()
+    nbr = np.asarray(nbr, dtype=np.int64)
+
+    F = len(y)
+    num_classes = int(num_classes)
+    min_size = int(min_size)
+    iters = int(iters)
+
+    if F == 0 or min_size <= 0 or iters <= 0:
+        return y
+
+    for _ in range(iters):
+        visited = np.zeros((F,), dtype=bool)
+        changed = 0
+
+        for start in range(F):
+            if visited[start]:
+                continue
+            lb = int(y[start])
+            if lb == ignore_index:
+                visited[start] = True
+                continue
+
+            # BFS component for this label
+            q = deque([start])
+            visited[start] = True
+            comp = [start]
+
+            while q:
+                u = q.popleft()
+                for v in nbr[u]:
+                    if visited[v]:
+                        continue
+                    if int(y[v]) != lb:
+                        continue
+                    visited[v] = True
+                    q.append(v)
+                    comp.append(v)
+
+            if len(comp) >= min_size:
+                continue
+
+            comp_set = set(comp)
+
+            # boundary votes from neighbors outside component
+            boundary = []
+            for u in comp:
+                for v in nbr[u]:
+                    if v in comp_set:
+                        continue
+                    lv = int(y[v])
+                    if lv != ignore_index:
+                        boundary.append(lv)
+
+            if not boundary:
+                continue
+
+            uvals, cnts = np.unique(np.asarray(boundary, dtype=np.int64), return_counts=True)
+            new_lb = int(uvals[np.argmax(cnts)])
+
+            if new_lb != lb:
+                y[np.asarray(comp, dtype=np.int64)] = new_lb
+                changed += len(comp)
+
+        if changed == 0:
+            break
+
+    return y
+
+
+# ============================================================
+# Original conservative postprocess (kept for compatibility)
+# ============================================================
 def postprocess_labels_conservative(
     labels: np.ndarray,
     centers: np.ndarray,
@@ -182,13 +332,115 @@ def postprocess_labels_conservative(
             lcc = largest_connected_component(mask, nbr)
             y[mask & (~lcc)] = -1  # drop tiny gingiva islands
 
-            # fill dropped with neighbor majority (teeth)
+            # fill dropped with neighbor majority
             dropped = (y == -1)
             if np.any(dropped):
                 y2 = y.copy()
                 for i in np.where(dropped)[0]:
                     nn = nbr[i]
                     votes = np.zeros((num_classes,), dtype=np.int32)
+                    for j in nn:
+                        lj = int(y[j])
+                        if lj >= 0:
+                            votes[lj] += 1
+                    y2[i] = int(np.argmax(votes))
+                y = y2
+
+    return y
+
+
+# ============================================================
+# ✅ NEW: "best visual" postprocess for app (match visualize.py)
+# ============================================================
+def postprocess_labels_best_visual(
+    labels: np.ndarray,
+    centers: np.ndarray,
+    probs: np.ndarray | None,
+    *,
+    num_classes: int,
+    gingiva_label: int = 16,
+    k: int = 16,
+    # Policy C
+    conf_thresh: float = 0.60,
+    conf_neighbor_iters: int = 1,
+    # cleanup
+    min_comp_size: int = 20,
+    clean_iters: int = 1,
+    # smoothing (light)
+    smooth_iters: int = 1,
+    # keep gingiva lcc (optional)
+    keep_gingiva_lcc: bool = True,
+    # ungingiva (optional)
+    ungingiva_margin: float = 0.05,
+    ungingiva_min_tooth_p: float = 0.12,
+) -> np.ndarray:
+    """
+    Recommended app visual pipeline:
+      1) build KNN graph on centers
+      2) (optional) light smooth
+      3) low-conf neighbor fill (Policy C)
+      4) cleanup small components for ALL labels
+      5) ungingiva + gingiva LCC keep (optional)
+      6) final light smooth (optional)
+    """
+    y = np.asarray(labels, dtype=np.int64).copy()
+    F = len(y)
+    if F == 0:
+        return y
+
+    nbr = build_face_knn(centers, k=int(k))
+
+    # A) light smooth first (reduce noise before decisions)
+    if int(smooth_iters) > 0:
+        y = majority_smooth(y, nbr, num_classes=int(num_classes), iters=int(smooth_iters), ignore_index=-1)
+
+    # B) Policy C: fill low-confidence by neighbors (no gingiva holes)
+    if probs is not None and float(conf_thresh) > 0:
+        y = fill_lowconf_by_neighbors(
+            y,
+            probs,
+            nbr,
+            num_classes=int(num_classes),
+            conf_thresh=float(conf_thresh),
+            iters=int(conf_neighbor_iters),
+            ignore_index=-1,
+        )
+
+    # C) Cleanup small islands for ALL labels (fix "mixed colors in one tooth")
+    if int(min_comp_size) > 0 and int(clean_iters) > 0:
+        y = cleanup_small_components_all_labels(
+            y,
+            nbr,
+            num_classes=int(num_classes),
+            min_size=int(min_comp_size),
+            iters=int(clean_iters),
+            ignore_index=-1,
+        )
+
+    # D) ungingiva (optional)
+    y = ungingiva_by_margin(
+        y,
+        probs,
+        num_classes=int(num_classes),
+        gingiva_label=int(gingiva_label),
+        min_tooth_p=float(ungingiva_min_tooth_p),
+        margin=float(ungingiva_margin),
+    )
+
+    # E) keep gingiva LCC (optional)
+    if keep_gingiva_lcc:
+        g = int(gingiva_label)
+        mask = (y == g)
+        if np.any(mask):
+            lcc = largest_connected_component(mask, nbr)
+            y[mask & (~lcc)] = -1
+            dropped = (y == -1)
+            if np.any(dropped):
+                # fill dropped by neighbor majority
+                y2 = y.copy()
+                for i in np.where(dropped)[0]:
+                    nn = nbr[i]
+                    votes = np.zeros((int(num_classes),), dtype=np.int32)
                     for j in nn:
                         lj = int(y[j])
                         if lj >= 0:

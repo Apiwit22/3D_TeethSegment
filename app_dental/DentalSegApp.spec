@@ -1,18 +1,16 @@
 # -*- mode: python ; coding: utf-8 -*-
+from PyInstaller.utils.hooks import collect_submodules
 from PyInstaller.utils.hooks import collect_all
 
 datas = [('registry.yaml', '.'), ('assets', 'assets'), ('models', 'models')]
 binaries = []
-hiddenimports = ['scipy', 'app.models.meshsegnet_repo_wrapper', 'app.models.pointnetpp', 'torch_cluster', 'torch_scatter', 'torch_sparse', 'torch_spline_conv', 'torch_geometric']
-tmp_ret = collect_all('scipy')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
+hiddenimports = ['app.models.meshsegnet_repo_wrapper', 'app.models.meshsegnet_runner', 'app.models.meshsegnet', 'app.models.pointnetpp_runner', 'app.models.pointnetpp', 'app.models.tsmdl_runner', 'app.models.imeshsegnet_knn2', 'scipy', 'scipy.spatial', 'scipy.spatial.transform']
+hiddenimports += collect_submodules('app.models')
 tmp_ret = collect_all('torch_cluster')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('torch_scatter')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('torch_sparse')
-datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
-tmp_ret = collect_all('torch_spline_conv')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]
 tmp_ret = collect_all('torch_geometric')
 datas += tmp_ret[0]; binaries += tmp_ret[1]; hiddenimports += tmp_ret[2]

@@ -1,2 +1,2 @@
-# app/ui/widgets/__init__.py
-__all__ = []
+from .viewer_widget import ViewerWidget
+from .layer_panel import LayerPanel, LayerInfo
