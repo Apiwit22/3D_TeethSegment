@@ -1,7 +1,8 @@
-# dental_seg_app/app/jobs/worker.py
 from __future__ import annotations
 
+import traceback
 from pathlib import Path
+
 from PySide6.QtCore import QObject, QThread, Signal
 
 from app.core.registry import Registry
@@ -24,23 +25,45 @@ class InferenceWorker(QThread):
         self.device = str(device)
         self.signals = WorkerSignals()
 
+    def _fail(self, message: str) -> None:
+        self.signals.failed.emit(message)
+
     def run(self) -> None:
         try:
-            self.signals.log.emit("โหลด registry.yaml ...")
+            if not self.mesh_path.exists():
+                raise FileNotFoundError(f"Input mesh not found: {self.mesh_path}")
+
+            self.signals.log.emit("Loading registry.yaml ...")
+            self.signals.progress.emit(3)
+
             reg = Registry(self.app_root / "registry.yaml").load()
             preset = reg.get(self.preset_key)
 
             self.signals.log.emit(
-                f"เริ่มรัน preset: {preset.key} | runner={preset.runner} | arch={preset.arch}"
+                f"Start preset={preset.key} | runner={preset.runner} | arch={preset.arch} | device={self.device}"
             )
             self.signals.progress.emit(5)
 
-            # ✅ ส่ง app_root เข้า Pipeline
             pipe = Pipeline(app_root=self.app_root, preset=preset, device=self.device)
-            res = pipe.run(self.mesh_path)
+
+            res = pipe.run(
+                self.mesh_path,
+                progress_cb=self.signals.progress.emit,
+                log_cb=self.signals.log.emit,
+            )
 
             self.signals.progress.emit(100)
+            self.signals.log.emit("Inference finished")
             self.signals.done.emit(res)
 
         except Exception as e:
-            self.signals.failed.emit(str(e))
+            tb = traceback.format_exc()
+            msg = (
+                f"InferenceWorker failed\n"
+                f"mesh_path={self.mesh_path}\n"
+                f"preset_key={self.preset_key}\n"
+                f"device={self.device}\n"
+                f"error={type(e).__name__}: {e}\n\n"
+                f"{tb}"
+            )
+            self._fail(msg)

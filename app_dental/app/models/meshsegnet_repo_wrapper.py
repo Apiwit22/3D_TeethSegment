@@ -1,9 +1,4 @@
 # models/meshsegnet_repo_wrapper.py
-# MeshSegNet wrapper (batch dict) + kNN sparse adjacency
-# - Builds sparse row-stochastic adjacency using torch-cluster knn_graph
-# - AMP-safe: runs adjacency build + sparse ops in fp32 where needed
-# - Works with MeshSegNet that supports sparse via _spmm_batch in models/meshsegnet.py
-
 from __future__ import annotations
 
 from dataclasses import dataclass

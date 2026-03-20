@@ -1,9 +1,4 @@
 # models/meshsegnet.py
-# MeshSegNet (AMP-safe sparse kNN adjacency)
-# - Supports dense adjacency (B,N,N) via torch.bmm
-# - Supports sparse adjacency as list[sparse_coo(N,N)] via torch.sparse.mm
-# - AMP-safe: forces sparse.mm to run in fp32 (CUDA doesn't support fp16 sparse addmm)
-# - BN-safe in STNkd when batchsize==1 (optional guard)
 
 from __future__ import annotations
 
