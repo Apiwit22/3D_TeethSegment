@@ -22,15 +22,38 @@ presets:
 
     do_postprocess: true
     pp_mode: best_visual
-    pp_knn_k: 16
-    pp_conf_thresh: 0.60
+    pp_knn_k: 12
+    pp_conf_thresh: 0.63
     pp_conf_neighbor_iters: 1
-    pp_min_comp_size: 30
+    pp_min_comp_size: 28
     pp_clean_iters: 1
-    pp_smooth_iters: 0
-    pp_ungingiva_margin: 0.05
-    pp_ungingiva_min_tooth_p: 0.12
+    pp_smooth_iters: 2
+    pp_ungingiva_margin: 0.06
+    pp_ungingiva_min_tooth_p: 0.14
     pp_keep_gingiva_lcc: true
+
+    pp_remove_tooth_islands_enabled: true
+    pp_remove_tooth_islands_iters: 2
+    pp_remove_tooth_islands_max_region_size: 8
+    pp_remove_tooth_islands_min_gingiva_support: 4
+    pp_remove_tooth_islands_dominance: 0.78
+    pp_remove_tooth_islands_max_mean_label_prob: 0.54
+    pp_remove_tooth_islands_max_mean_max_prob: 0.66
+
+    pp_merge_foreign_islands_enabled: true
+    pp_merge_foreign_islands_iters: 2
+    pp_merge_foreign_islands_max_region_size: 8
+    pp_merge_foreign_islands_min_boundary_support: 4
+    pp_merge_foreign_islands_dominance: 0.80
+    pp_merge_foreign_islands_max_mean_label_prob: 0.56
+    pp_merge_foreign_islands_max_mean_max_prob: 0.68
+    pp_merge_foreign_islands_allow_to_gingiva: false
+
+    pp_close_gap_enabled: true
+    pp_close_gap_iters: 1
+    pp_close_gap_min_support: 4
+    pp_close_gap_dominance: 0.80
+    pp_close_gap_max_region_size: 3
 
     ckpts:
       - models/builtin/meshsegnet/upper/dataset1_best.pth
@@ -59,15 +82,38 @@ presets:
 
     do_postprocess: true
     pp_mode: best_visual
-    pp_knn_k: 16
-    pp_conf_thresh: 0.60
+    pp_knn_k: 12
+    pp_conf_thresh: 0.63
     pp_conf_neighbor_iters: 1
-    pp_min_comp_size: 30
+    pp_min_comp_size: 28
     pp_clean_iters: 1
-    pp_smooth_iters: 0
-    pp_ungingiva_margin: 0.05
-    pp_ungingiva_min_tooth_p: 0.12
+    pp_smooth_iters: 1
+    pp_ungingiva_margin: 0.06
+    pp_ungingiva_min_tooth_p: 0.14
     pp_keep_gingiva_lcc: true
+
+    pp_remove_tooth_islands_enabled: true
+    pp_remove_tooth_islands_iters: 2
+    pp_remove_tooth_islands_max_region_size: 8
+    pp_remove_tooth_islands_min_gingiva_support: 4
+    pp_remove_tooth_islands_dominance: 0.78
+    pp_remove_tooth_islands_max_mean_label_prob: 0.54
+    pp_remove_tooth_islands_max_mean_max_prob: 0.66
+
+    pp_merge_foreign_islands_enabled: true
+    pp_merge_foreign_islands_iters: 2
+    pp_merge_foreign_islands_max_region_size: 8
+    pp_merge_foreign_islands_min_boundary_support: 4
+    pp_merge_foreign_islands_dominance: 0.80
+    pp_merge_foreign_islands_max_mean_label_prob: 0.56
+    pp_merge_foreign_islands_max_mean_max_prob: 0.68
+    pp_merge_foreign_islands_allow_to_gingiva: false
+
+    pp_close_gap_enabled: true
+    pp_close_gap_iters: 1
+    pp_close_gap_min_support: 4
+    pp_close_gap_dominance: 0.80
+    pp_close_gap_max_region_size: 3
 
     ckpts:
       - models/builtin/meshsegnet/lower/dataset1_best.pth
@@ -96,9 +142,9 @@ presets:
 
     pt_deterministic_sampling: true
     pt_sample_seed: 1234
-    pt_mc_passes: 2
+    pt_mc_passes: 4
     pt_cover_faces: true
-    pt_cover_jitter: 0.0
+    pt_cover_jitter: 0.002
 
     target_faces: 16000
     do_orient: true
@@ -108,15 +154,27 @@ presets:
 
     do_postprocess: true
     pp_mode: best_visual
-    pp_knn_k: 16
-    pp_conf_thresh: 0.60
+    pp_knn_k: 14
+    pp_conf_thresh: 0.58
     pp_conf_neighbor_iters: 1
-    pp_min_comp_size: 30
+    pp_min_comp_size: 25
     pp_clean_iters: 1
     pp_smooth_iters: 1
-    pp_ungingiva_margin: 0.05
-    pp_ungingiva_min_tooth_p: 0.12
+    pp_ungingiva_margin: 0.04
+    pp_ungingiva_min_tooth_p: 0.10
     pp_keep_gingiva_lcc: true
+
+    pp_remove_tooth_islands_enabled: true
+    pp_remove_tooth_islands_iters: 2
+    pp_remove_tooth_islands_max_region_size: 18
+    pp_remove_tooth_islands_min_gingiva_support: 4
+    pp_remove_tooth_islands_dominance: 0.60
+
+    pp_close_gap_enabled: true
+    pp_close_gap_iters: 1
+    pp_close_gap_min_support: 4
+    pp_close_gap_dominance: 0.76
+    pp_close_gap_max_region_size: 4
 
     ckpts:
       - models/builtin/pointnetpp/upper/dataset1_best.pth
@@ -142,9 +200,9 @@ presets:
 
     pt_deterministic_sampling: true
     pt_sample_seed: 1234
-    pt_mc_passes: 2
+    pt_mc_passes: 4
     pt_cover_faces: true
-    pt_cover_jitter: 0.0
+    pt_cover_jitter: 0.002
 
     target_faces: 16000
     do_orient: true
@@ -154,15 +212,27 @@ presets:
 
     do_postprocess: true
     pp_mode: best_visual
-    pp_knn_k: 16
-    pp_conf_thresh: 0.60
+    pp_knn_k: 14
+    pp_conf_thresh: 0.58
     pp_conf_neighbor_iters: 1
-    pp_min_comp_size: 30
+    pp_min_comp_size: 25
     pp_clean_iters: 1
     pp_smooth_iters: 1
-    pp_ungingiva_margin: 0.05
-    pp_ungingiva_min_tooth_p: 0.12
+    pp_ungingiva_margin: 0.04
+    pp_ungingiva_min_tooth_p: 0.10
     pp_keep_gingiva_lcc: true
+
+    pp_remove_tooth_islands_enabled: true
+    pp_remove_tooth_islands_iters: 2
+    pp_remove_tooth_islands_max_region_size: 18
+    pp_remove_tooth_islands_min_gingiva_support: 4
+    pp_remove_tooth_islands_dominance: 0.60
+
+    pp_close_gap_enabled: true
+    pp_close_gap_iters: 1
+    pp_close_gap_min_support: 4
+    pp_close_gap_dominance: 0.76
+    pp_close_gap_max_region_size: 4
 
     ckpts:
       - models/builtin/pointnetpp/lower/dataset1_best.pth
@@ -172,19 +242,27 @@ presets:
       - models/builtin/pointnetpp/lower/dataset5_best.pth
 
   # =========================================================
-  # ✅ TS-MDL / iMeshSegNetKNNBatch (Face) via TSMdlRunner
+  # PointNet++ FINAL (Point)
   # =========================================================
-  tsmdl_upper:
+  pointnetpp_final_upper:
     arch: upper
-    runner: tsmdl
-    model_import: app.models.imeshsegnet_knn2:IMeshSegNetKNNBatch
+    runner: pointnetpp
+    model_import: app.models.pointnetpp:PointNet2Seg
     model_kwargs:
+      in_channels: 6
       num_classes: 17
-      in_channels: 15
-      # ใส่ kwargs เฉพาะโมเดล ถ้ามี (ตาม __init__ ของคุณ)
-      # knn_s: 6
-      # knn_l: 12
-      # dropout_p: 0.3
+      sa_npoints: [2048, 512, 128]
+      sa_radii: [0.05, 0.10, 0.20]
+      sa_nsamples: [32, 32, 32]
+      dropout: 0.5
+
+    num_points: 8192
+    point_feature: xyz_n
+    pt_deterministic_sampling: true
+    pt_sample_seed: 1234
+    pt_mc_passes: 4
+    pt_cover_faces: true
+    pt_cover_jitter: 0.002
 
     target_faces: 16000
     do_orient: true
@@ -194,15 +272,132 @@ presets:
 
     do_postprocess: true
     pp_mode: best_visual
-    pp_knn_k: 16
-    pp_conf_thresh: 0.60
+    pp_knn_k: 14
+    pp_conf_thresh: 0.58
     pp_conf_neighbor_iters: 1
-    pp_min_comp_size: 30
+    pp_min_comp_size: 25
     pp_clean_iters: 1
-    pp_smooth_iters: 0
-    pp_ungingiva_margin: 0.05
-    pp_ungingiva_min_tooth_p: 0.12
+    pp_smooth_iters: 1
+    pp_ungingiva_margin: 0.04
+    pp_ungingiva_min_tooth_p: 0.10
     pp_keep_gingiva_lcc: true
+
+    pp_remove_tooth_islands_enabled: true
+    pp_remove_tooth_islands_iters: 2
+    pp_remove_tooth_islands_max_region_size: 18
+    pp_remove_tooth_islands_min_gingiva_support: 4
+    pp_remove_tooth_islands_dominance: 0.60
+
+    pp_close_gap_enabled: true
+    pp_close_gap_iters: 1
+    pp_close_gap_min_support: 4
+    pp_close_gap_dominance: 0.76
+    pp_close_gap_max_region_size: 4
+
+    ckpts:
+      - models/builtin/pointnetpp_final/upper/dataset1_best.pth
+      - models/builtin/pointnetpp_final/upper/dataset2_best.pth
+      - models/builtin/pointnetpp_final/upper/dataset3_best.pth
+      - models/builtin/pointnetpp_final/upper/dataset4_best.pth
+      - models/builtin/pointnetpp_final/upper/dataset5_best.pth
+
+  pointnetpp_final_lower:
+    arch: lower
+    runner: pointnetpp
+    model_import: app.models.pointnetpp:PointNet2Seg
+    model_kwargs:
+      in_channels: 6
+      num_classes: 17
+      sa_npoints: [2048, 512, 128]
+      sa_radii: [0.05, 0.10, 0.20]
+      sa_nsamples: [32, 32, 32]
+      dropout: 0.5
+
+    num_points: 8192
+    point_feature: xyz_n
+    pt_deterministic_sampling: true
+    pt_sample_seed: 1234
+    pt_mc_passes: 4
+    pt_cover_faces: true
+    pt_cover_jitter: 0.002
+
+    target_faces: 16000
+    do_orient: true
+    do_normalize: true
+    allow_reflection: false
+    ref_path: assets/ref/007_L.ply
+
+    do_postprocess: true
+    pp_mode: best_visual
+    pp_knn_k: 14
+    pp_conf_thresh: 0.58
+    pp_conf_neighbor_iters: 1
+    pp_min_comp_size: 25
+    pp_clean_iters: 1
+    pp_smooth_iters: 1
+    pp_ungingiva_margin: 0.04
+    pp_ungingiva_min_tooth_p: 0.10
+    pp_keep_gingiva_lcc: true
+
+    pp_remove_tooth_islands_enabled: true
+    pp_remove_tooth_islands_iters: 2
+    pp_remove_tooth_islands_max_region_size: 18
+    pp_remove_tooth_islands_min_gingiva_support: 4
+    pp_remove_tooth_islands_dominance: 0.60
+
+    pp_close_gap_enabled: true
+    pp_close_gap_iters: 1
+    pp_close_gap_min_support: 4
+    pp_close_gap_dominance: 0.76
+    pp_close_gap_max_region_size: 4
+
+    ckpts:
+      - models/builtin/pointnetpp_final/lower/dataset1_best.pth
+      - models/builtin/pointnetpp_final/lower/dataset2_best.pth
+      - models/builtin/pointnetpp_final/lower/dataset3_best.pth
+      - models/builtin/pointnetpp_final/lower/dataset4_best.pth
+      - models/builtin/pointnetpp_final/lower/dataset5_best.pth
+
+  # =========================================================
+  # TS-MDL / iMeshSegNetKNNBatch (Face) via TSMdlRunner
+  # =========================================================
+  tsmdl_upper:
+    arch: upper
+    runner: tsmdl
+    model_import: app.models.imeshsegnet_knn2:IMeshSegNetKNNBatch
+    model_kwargs:
+      num_classes: 17
+      in_channels: 15
+
+    target_faces: 16000
+    do_orient: true
+    do_normalize: true
+    allow_reflection: false
+    ref_path: assets/ref/007_U.ply
+
+    do_postprocess: true
+    pp_mode: best_visual
+    pp_knn_k: 12
+    pp_conf_thresh: 0.66
+    pp_conf_neighbor_iters: 1
+    pp_min_comp_size: 45
+    pp_clean_iters: 1
+    pp_smooth_iters: 1
+    pp_ungingiva_margin: 0.05
+    pp_ungingiva_min_tooth_p: 0.14
+    pp_keep_gingiva_lcc: true
+
+    pp_remove_tooth_islands_enabled: true
+    pp_remove_tooth_islands_iters: 2
+    pp_remove_tooth_islands_max_region_size: 18
+    pp_remove_tooth_islands_min_gingiva_support: 4
+    pp_remove_tooth_islands_dominance: 0.65
+
+    pp_close_gap_enabled: true
+    pp_close_gap_iters: 1
+    pp_close_gap_min_support: 4
+    pp_close_gap_dominance: 0.74
+    pp_close_gap_max_region_size: 4
 
     ckpts:
       - models/builtin/tsmdl/upper/dataset1_best.pth
@@ -211,7 +406,7 @@ presets:
       - models/builtin/tsmdl/upper/dataset4_best.pth
       - models/builtin/tsmdl/upper/dataset5_best.pth
 
-  tsmdl_lower:
+  tsmdl_final_lower:
     arch: lower
     runner: tsmdl
     model_import: app.models.imeshsegnet_knn2:IMeshSegNetKNNBatch
@@ -227,19 +422,439 @@ presets:
 
     do_postprocess: true
     pp_mode: best_visual
-    pp_knn_k: 16
-    pp_conf_thresh: 0.60
+    pp_knn_k: 10
+    pp_conf_thresh: 0.67
     pp_conf_neighbor_iters: 1
-    pp_min_comp_size: 30
+    pp_min_comp_size: 50
     pp_clean_iters: 1
     pp_smooth_iters: 0
-    pp_ungingiva_margin: 0.05
-    pp_ungingiva_min_tooth_p: 0.12
+    pp_ungingiva_margin: 0.06
+    pp_ungingiva_min_tooth_p: 0.16
     pp_keep_gingiva_lcc: true
 
+    pp_remove_tooth_islands_enabled: true
+    pp_remove_tooth_islands_iters: 2
+    pp_remove_tooth_islands_max_region_size: 8
+    pp_remove_tooth_islands_min_gingiva_support: 4
+    pp_remove_tooth_islands_dominance: 0.82
+    pp_remove_tooth_islands_max_mean_label_prob: 0.56
+    pp_remove_tooth_islands_max_mean_max_prob: 0.68
+
+    pp_merge_foreign_islands_enabled: true
+    pp_merge_foreign_islands_iters: 2
+    pp_merge_foreign_islands_max_region_size: 8
+    pp_merge_foreign_islands_min_boundary_support: 4
+    pp_merge_foreign_islands_dominance: 0.82
+    pp_merge_foreign_islands_max_mean_label_prob: 0.56
+    pp_merge_foreign_islands_max_mean_max_prob: 0.68
+    pp_merge_foreign_islands_allow_to_gingiva: false
+
+    pp_close_gap_enabled: true
+    pp_close_gap_iters: 1
+    pp_close_gap_min_support: 4
+    pp_close_gap_dominance: 0.84
+    pp_close_gap_max_region_size: 2
+
     ckpts:
-      - models/builtin/tsmdl/lower/dataset1_best.pth
-      - models/builtin/tsmdl/lower/dataset2_best.pth
-      - models/builtin/tsmdl/lower/dataset3_best.pth
-      - models/builtin/tsmdl/lower/dataset4_best.pth
-      - models/builtin/tsmdl/lower/dataset5_best.pth
+      - models/builtin/tsmdl_final/lower/dataset1_best.pth
+      - models/builtin/tsmdl_final/lower/dataset2_best.pth
+      - models/builtin/tsmdl_final/lower/dataset3_best.pth
+      - models/builtin/tsmdl_final/lower/dataset4_best.pth
+      - models/builtin/tsmdl_final/lower/dataset5_best.pth
+
+  # =========================================================
+  # Fast-TGCN (Graph / Face-style export)
+  # =========================================================
+  fast_tgcn_upper:
+    arch: upper
+    runner: fast_tgcn
+    model_import: app.models.fast_tgcn:FastTGCN
+    model_kwargs:
+      in_channels: 24
+      coord_channels: 12
+      normal_channels: 12
+      num_classes: 17
+      stem_channels: 64
+      block_channels: [64, 128, 128, 256]
+      classifier_hidden: 128
+      dropout: 0.1
+      use_global_context: true
+
+    target_faces: 16000
+    do_orient: true
+    do_normalize: true
+    allow_reflection: false
+    ref_path: assets/ref/007_U.ply
+
+    do_postprocess: true
+    pp_mode: best_visual
+    pp_knn_k: 10
+    pp_conf_thresh: 0.67
+    pp_conf_neighbor_iters: 1
+    pp_min_comp_size: 44
+    pp_clean_iters: 1
+    pp_smooth_iters: 0
+    pp_ungingiva_margin: 0.07
+    pp_ungingiva_min_tooth_p: 0.16
+    pp_keep_gingiva_lcc: true
+
+    pp_remove_tooth_islands_enabled: true
+    pp_remove_tooth_islands_iters: 2
+    pp_remove_tooth_islands_max_region_size: 7
+    pp_remove_tooth_islands_min_gingiva_support: 4
+    pp_remove_tooth_islands_dominance: 0.84
+    pp_remove_tooth_islands_max_mean_label_prob: 0.54
+    pp_remove_tooth_islands_max_mean_max_prob: 0.67
+
+    pp_merge_foreign_islands_enabled: true
+    pp_merge_foreign_islands_iters: 2
+    pp_merge_foreign_islands_max_region_size: 10
+    pp_merge_foreign_islands_min_boundary_support: 4
+    pp_merge_foreign_islands_dominance: 0.80
+    pp_merge_foreign_islands_max_mean_label_prob: 0.54
+    pp_merge_foreign_islands_max_mean_max_prob: 0.68
+    pp_merge_foreign_islands_allow_to_gingiva: true
+
+    pp_close_gap_enabled: true
+    pp_close_gap_iters: 1
+    pp_close_gap_min_support: 4
+    pp_close_gap_dominance: 0.78
+    pp_close_gap_max_region_size: 6
+
+    ckpts:
+      - models/builtin/fast_tgcn/upper/dataset1_best.pth
+      - models/builtin/fast_tgcn/upper/dataset2_best.pth
+      - models/builtin/fast_tgcn/upper/dataset3_best.pth
+      - models/builtin/fast_tgcn/upper/dataset4_best.pth
+      - models/builtin/fast_tgcn/upper/dataset5_best.pth
+
+
+  fast_tgcn_lower:
+    arch: lower
+    runner: fast_tgcn
+    model_import: app.models.fast_tgcn:FastTGCN
+    model_kwargs:
+      in_channels: 24
+      coord_channels: 12
+      normal_channels: 12
+      num_classes: 17
+      stem_channels: 64
+      block_channels: [64, 128, 128, 256]
+      classifier_hidden: 128
+      dropout: 0.1
+      use_global_context: true
+
+    target_faces: 16000
+    do_orient: true
+    do_normalize: true
+    allow_reflection: false
+    ref_path: assets/ref/007_L.ply
+
+    do_postprocess: true
+    pp_mode: best_visual
+    pp_knn_k: 9
+    pp_conf_thresh: 0.68
+    pp_conf_neighbor_iters: 1
+    pp_min_comp_size: 40
+    pp_clean_iters: 1
+    pp_smooth_iters: 0
+    pp_ungingiva_margin: 0.08
+    pp_ungingiva_min_tooth_p: 0.18
+    pp_keep_gingiva_lcc: true
+
+    pp_remove_tooth_islands_enabled: true
+    pp_remove_tooth_islands_iters: 2
+    pp_remove_tooth_islands_max_region_size: 5
+    pp_remove_tooth_islands_min_gingiva_support: 4
+    pp_remove_tooth_islands_dominance: 0.88
+    pp_remove_tooth_islands_max_mean_label_prob: 0.50
+    pp_remove_tooth_islands_max_mean_max_prob: 0.64
+
+    pp_merge_foreign_islands_enabled: true
+    pp_merge_foreign_islands_iters: 3
+    pp_merge_foreign_islands_max_region_size: 14
+    pp_merge_foreign_islands_min_boundary_support: 4
+    pp_merge_foreign_islands_dominance: 0.74
+    pp_merge_foreign_islands_max_mean_label_prob: 0.60
+    pp_merge_foreign_islands_max_mean_max_prob: 0.72
+    pp_merge_foreign_islands_allow_to_gingiva: false
+
+    pp_close_gap_enabled: true
+    pp_close_gap_iters: 1
+    pp_close_gap_min_support: 4
+    pp_close_gap_dominance: 0.80
+    pp_close_gap_max_region_size: 5
+
+    ckpts:
+      - models/builtin/fast_tgcn/lower/dataset1_best.pth
+      - models/builtin/fast_tgcn/lower/dataset2_best.pth
+      - models/builtin/fast_tgcn/lower/dataset3_best.pth
+      - models/builtin/fast_tgcn/lower/dataset4_best.pth
+      - models/builtin/fast_tgcn/lower/dataset5_best.pth
+
+  # =========================================================
+  # PointCNN (Point)
+  # =========================================================
+  pointcnn_upper:
+    arch: upper
+    runner: pointcnn
+    model_import: app.models.pointcnn:PointCNNPaperSeg
+    model_kwargs:
+      num_classes: 17
+      in_channels: 6
+      num_points: 4096
+      n1: 1024
+      n2: 256
+      n3: 64
+      k: 16
+      c1: 64
+      c2: 128
+      c3: 256
+      dropout_p: 0.2
+
+    num_points: 4096
+    point_feature: xyz_n
+
+    pt_deterministic_sampling: true
+    pt_sample_seed: 1234
+    pt_mc_passes: 7
+    pt_cover_faces: true
+    pt_cover_jitter: 0.0010
+
+    target_faces: 16000
+    do_orient: true
+    do_normalize: true
+    allow_reflection: false
+    ref_path: assets/ref/007_U.ply
+
+    do_postprocess: true
+    pp_mode: conservative
+    pp_knn_k: 10
+    pp_conf_thresh: 0.62
+    pp_conf_neighbor_iters: 1
+    pp_min_comp_size: 38
+    pp_clean_iters: 1
+    pp_smooth_iters: 1
+    pp_ungingiva_margin: 0.035
+    pp_ungingiva_min_tooth_p: 0.13
+    pp_keep_gingiva_lcc: true
+
+    pp_remove_tooth_islands_enabled: true
+    pp_remove_tooth_islands_iters: 2
+    pp_remove_tooth_islands_max_region_size: 10
+    pp_remove_tooth_islands_min_gingiva_support: 5
+    pp_remove_tooth_islands_dominance: 0.72
+    pp_remove_tooth_islands_max_mean_label_prob: 0.52
+    pp_remove_tooth_islands_max_mean_max_prob: 0.64
+
+    pp_merge_foreign_islands_enabled: true
+    pp_merge_foreign_islands_iters: 1
+    pp_merge_foreign_islands_max_region_size: 6
+    pp_merge_foreign_islands_min_boundary_support: 5
+    pp_merge_foreign_islands_dominance: 0.82
+    pp_merge_foreign_islands_max_mean_label_prob: 0.52
+    pp_merge_foreign_islands_max_mean_max_prob: 0.64
+    pp_merge_foreign_islands_allow_to_gingiva: false
+
+    pp_close_gap_enabled: true
+    pp_close_gap_iters: 1
+    pp_close_gap_min_support: 5
+    pp_close_gap_dominance: 0.82
+    pp_close_gap_max_region_size: 3
+
+    ckpts:
+      - models/builtin/pointcnn/upper/dataset1_best.pth
+      - models/builtin/pointcnn/upper/dataset2_best.pth
+      - models/builtin/pointcnn/upper/dataset3_best.pth
+      - models/builtin/pointcnn/upper/dataset4_best.pth
+      - models/builtin/pointcnn/upper/dataset5_best.pth
+
+  pointcnn_lower:
+    arch: lower
+    runner: pointcnn
+    model_import: app.models.pointcnn:PointCNNPaperSeg
+    model_kwargs:
+      num_classes: 17
+      in_channels: 6
+      num_points: 4096
+      n1: 1024
+      n2: 256
+      n3: 64
+      k: 16
+      c1: 64
+      c2: 128
+      c3: 256
+      dropout_p: 0.2
+
+    num_points: 4096
+    point_feature: xyz_n
+
+    pt_deterministic_sampling: true
+    pt_sample_seed: 1234
+    pt_mc_passes: 9
+    pt_cover_faces: true
+    pt_cover_jitter: 0.0008
+
+    target_faces: 16000
+    do_orient: true
+    do_normalize: true
+    allow_reflection: false
+    ref_path: assets/ref/007_L.ply
+
+    do_postprocess: true
+    pp_mode: best_visual
+    pp_knn_k: 12
+    pp_conf_thresh: 0.60
+    pp_conf_neighbor_iters: 1
+    pp_min_comp_size: 36
+    pp_clean_iters: 1
+    pp_smooth_iters: 3
+    pp_ungingiva_margin: 0.035
+    pp_ungingiva_min_tooth_p: 0.13
+    pp_keep_gingiva_lcc: true
+
+    pp_remove_tooth_islands_enabled: true
+    pp_remove_tooth_islands_iters: 2
+    pp_remove_tooth_islands_max_region_size: 8
+    pp_remove_tooth_islands_min_gingiva_support: 5
+    pp_remove_tooth_islands_dominance: 0.74
+    pp_remove_tooth_islands_max_mean_label_prob: 0.50
+    pp_remove_tooth_islands_max_mean_max_prob: 0.64
+
+    pp_merge_foreign_islands_enabled: true
+    pp_merge_foreign_islands_iters: 1
+    pp_merge_foreign_islands_max_region_size: 4
+    pp_merge_foreign_islands_min_boundary_support: 6
+    pp_merge_foreign_islands_dominance: 0.86
+    pp_merge_foreign_islands_max_mean_label_prob: 0.50
+    pp_merge_foreign_islands_max_mean_max_prob: 0.62
+    pp_merge_foreign_islands_allow_to_gingiva: false
+
+    pp_close_gap_enabled: true
+    pp_close_gap_iters: 1
+    pp_close_gap_min_support: 6
+    pp_close_gap_dominance: 0.86
+    pp_close_gap_max_region_size: 2
+
+    ckpts:
+      - models/builtin/pointcnn/lower/dataset1_best.pth
+      - models/builtin/pointcnn/lower/dataset2_best.pth
+      - models/builtin/pointcnn/lower/dataset3_best.pth
+      - models/builtin/pointcnn/lower/dataset4_best.pth
+      - models/builtin/pointcnn/lower/dataset5_best.pth
+
+  # =========================================================
+  # TS-MDL FINAL
+  # =========================================================
+  tsmdl_final_upper:
+    arch: upper
+    runner: tsmdl
+    model_import: app.models.imeshsegnet_knn2:IMeshSegNetKNNBatch
+    model_kwargs:
+      num_classes: 17
+      in_channels: 15
+
+    target_faces: 16000
+    do_orient: true
+    do_normalize: true
+    allow_reflection: false
+    ref_path: assets/ref/007_U.ply
+
+    do_postprocess: true
+    pp_mode: best_visual
+    pp_knn_k: 11
+    pp_conf_thresh: 0.68
+    pp_conf_neighbor_iters: 1
+    pp_min_comp_size: 50
+    pp_clean_iters: 1
+    pp_smooth_iters: 0
+    pp_ungingiva_margin: 0.07
+    pp_ungingiva_min_tooth_p: 0.18
+    pp_keep_gingiva_lcc: true
+
+    pp_remove_tooth_islands_enabled: true
+    pp_remove_tooth_islands_iters: 3
+    pp_remove_tooth_islands_max_region_size: 16
+    pp_remove_tooth_islands_min_gingiva_support: 3
+    pp_remove_tooth_islands_dominance: 0.76
+    pp_remove_tooth_islands_max_mean_label_prob: 0.66
+    pp_remove_tooth_islands_max_mean_max_prob: 0.74
+
+    pp_close_gap_enabled: true
+    pp_close_gap_iters: 1
+    pp_close_gap_min_support: 5
+    pp_close_gap_dominance: 0.86
+    pp_close_gap_max_region_size: 2
+
+    ckpts:
+      - models/builtin/tsmdl_final/upper/dataset1_best.pth
+      - models/builtin/tsmdl_final/upper/dataset2_best.pth
+      - models/builtin/tsmdl_final/upper/dataset3_best.pth
+      - models/builtin/tsmdl_final/upper/dataset4_best.pth
+      - models/builtin/tsmdl_final/upper/dataset5_best.pth
+
+  tsmdl_final_lower:
+    arch: lower
+    runner: tsmdl
+    model_import: app.models.imeshsegnet_knn2:IMeshSegNetKNNBatch
+    model_kwargs:
+      num_classes: 17
+      in_channels: 15
+
+    target_faces: 16000
+    do_orient: true
+    do_normalize: true
+    allow_reflection: false
+    ref_path: assets/ref/007_L.ply
+
+    do_postprocess: true
+    pp_mode: best_visual
+    pp_knn_k: 10
+    pp_conf_thresh: 0.63
+    pp_conf_neighbor_iters: 1
+    pp_min_comp_size: 42
+    pp_clean_iters: 1
+    pp_smooth_iters: 3
+    pp_ungingiva_margin: 0.07
+    pp_ungingiva_min_tooth_p: 0.14
+    pp_keep_gingiva_lcc: true
+
+    pp_remove_tooth_islands_enabled: true
+    pp_remove_tooth_islands_iters: 2
+    pp_remove_tooth_islands_max_region_size: 6
+    pp_remove_tooth_islands_min_gingiva_support: 5
+    pp_remove_tooth_islands_dominance: 0.84
+    pp_remove_tooth_islands_max_mean_label_prob: 0.52
+    pp_remove_tooth_islands_max_mean_max_prob: 0.64
+
+    pp_merge_foreign_islands_enabled: true
+    pp_merge_foreign_islands_iters: 3
+    pp_merge_foreign_islands_max_region_size: 16
+    pp_merge_foreign_islands_min_boundary_support: 5
+    pp_merge_foreign_islands_dominance: 0.74
+    pp_merge_foreign_islands_max_mean_label_prob: 0.64
+    pp_merge_foreign_islands_max_mean_max_prob: 0.78
+    pp_merge_foreign_islands_allow_to_gingiva: false
+
+    pp_relabel_boundary_bleeding_enabled: true
+    pp_relabel_boundary_bleeding_iters: 2
+    pp_relabel_boundary_bleeding_max_region_size: 80
+    pp_relabel_boundary_bleeding_min_boundary_support: 6
+    pp_relabel_boundary_bleeding_dominance: 0.68
+    pp_relabel_boundary_bleeding_max_mean_label_prob: 0.68
+    pp_relabel_boundary_bleeding_max_mean_max_prob: 0.78
+    pp_relabel_boundary_bleeding_min_mean_target_prob: 0.24
+    pp_relabel_boundary_bleeding_allow_to_gingiva: false
+
+    pp_close_gap_enabled: true
+    pp_close_gap_iters: 2
+    pp_close_gap_min_support: 4
+    pp_close_gap_dominance: 0.74
+    pp_close_gap_max_region_size: 6
+
+    ckpts:
+      - models/builtin/tsmdl_final/lower/dataset1_best.pth
+      - models/builtin/tsmdl_final/lower/dataset2_best.pth
+      - models/builtin/tsmdl_final/lower/dataset3_best.pth
+      - models/builtin/tsmdl_final/lower/dataset4_best.pth
+      - models/builtin/tsmdl_final/lower/dataset5_best.pth

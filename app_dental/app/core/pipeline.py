@@ -1,32 +1,31 @@
-# dental_seg_app/app/core/pipeline.py
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import numpy as np
 import torch
 
-from app.core.types import MeshData, PipelineResult
+from app.core.postprocess import run_postprocess
 from app.core.registry import Preset
+from app.core.types import MeshData, PipelineResult
 from app.io.mesh_loader import load_mesh
-from app.preprocess.remesh import remesh_to_faces
 from app.preprocess.orient import OrientConfig, orient_mesh_to_reference
-from app.models.meshsegnet_runner import MeshSegNetRunner
-from app.models.pointnetpp_runner import PointNetPPRunner
+from app.preprocess.remesh import remesh_to_faces
 
-# ✅ NEW: tsmdl runner
+from app.models.fast_tgcn_runner import FastTGCNRunner
+from app.models.meshsegnet_runner import MeshSegNetRunner
+from app.models.pointcnn_runner import PointCNNRunner
+from app.models.pointnetpp_runner import PointNetPPRunner
 from app.models.tsmdl_runner import TSMdlRunner
 
-# Postprocess
-from app.data.postprocess import (
-    postprocess_labels_conservative,
-    postprocess_labels_best_visual,
-)
+
+ProgressCB = Optional[Callable[[int], None]]
+LogCB = Optional[Callable[[str], None]]
 
 
-def _resolve_from_app_root(app_root: Path, p: str) -> Path:
+def _resolve_from_app_root(app_root: Path, p: str | Path) -> Path:
     pp = Path(p)
     return pp if pp.is_absolute() else (Path(app_root) / pp).resolve()
 
@@ -43,14 +42,102 @@ def _resolve_many_from_app_root(app_root: Path, paths: List[str]) -> Tuple[List[
     return exist_abs, missing_abs
 
 
-def _get(preset: Preset, name: str, default):
-    return getattr(preset, name, default)
+def _infer_ref_pair_from_single_path(ref_path: Path) -> Tuple[Path, Path]:
+    s = str(ref_path)
+    if "007_L.ply" in s:
+        return Path(s.replace("007_L.ply", "007_U.ply")), Path(s)
+    if "007_U.ply" in s:
+        return Path(s), Path(s.replace("007_U.ply", "007_L.ply"))
+    raise ValueError(
+        "Cannot infer upper/lower reference pair from ref_path. "
+        "Use ref_upper_path and ref_lower_path explicitly in registry.yaml."
+    )
+
+
+def _resolve_reference_paths(app_root: Path, preset: Preset) -> Tuple[Path, Path]:
+    if preset.ref_upper_path and preset.ref_lower_path:
+        ref_upper = _resolve_from_app_root(app_root, preset.ref_upper_path)
+        ref_lower = _resolve_from_app_root(app_root, preset.ref_lower_path)
+        return ref_upper, ref_lower
+
+    if preset.ref_path:
+        ref_path = _resolve_from_app_root(app_root, preset.ref_path)
+        return _infer_ref_pair_from_single_path(ref_path)
+
+    raise ValueError(
+        f"Preset '{preset.key}' has do_orient=True but no usable reference path configuration"
+    )
+
+
+def _build_runner(app_root: Path, preset: Preset, ckpts_exist_abs: List[str], device: str):
+    runner = preset.runner.lower()
+
+    if runner == "tsmdl":
+        return TSMdlRunner.build(
+            model_import=preset.model_import,
+            model_kwargs=preset.model_kwargs,
+            ckpt_path=ckpts_exist_abs,
+            device=device,
+            app_root=app_root,
+        )
+
+    if runner == "pointnetpp":
+        return PointNetPPRunner.build(
+            model_import=preset.model_import,
+            model_kwargs=preset.model_kwargs,
+            ckpt_path=ckpts_exist_abs,
+            device=device,
+            num_points=int(preset.num_points),
+            point_feature=str(preset.point_feature),
+            app_root=app_root,
+            deterministic_sampling=bool(preset.pt_deterministic_sampling),
+            sample_seed=int(preset.pt_sample_seed),
+            mc_passes=int(preset.pt_mc_passes),
+            cover_faces=bool(preset.pt_cover_faces),
+            cover_jitter=float(preset.pt_cover_jitter),
+        )
+
+    if runner == "pointcnn":
+        return PointCNNRunner.build(
+            model_import=preset.model_import,
+            model_kwargs=preset.model_kwargs,
+            ckpt_path=ckpts_exist_abs,
+            device=device,
+            num_points=int(preset.num_points),
+            point_feature=str(preset.point_feature),
+            app_root=app_root,
+            deterministic_sampling=bool(preset.pt_deterministic_sampling),
+            sample_seed=int(preset.pt_sample_seed),
+            mc_passes=int(preset.pt_mc_passes),
+            cover_faces=bool(preset.pt_cover_faces),
+            cover_jitter=float(preset.pt_cover_jitter),
+        )
+
+    if runner == "meshsegnet":
+        return MeshSegNetRunner.build(
+            model_import=preset.model_import,
+            model_kwargs=preset.model_kwargs,
+            ckpt_path=ckpts_exist_abs,
+            device=device,
+            app_root=app_root,
+        )
+
+    if runner == "fast_tgcn":
+        return FastTGCNRunner.build(
+            model_import=preset.model_import,
+            model_kwargs=preset.model_kwargs,
+            ckpt_path=ckpts_exist_abs,
+            device=device,
+            app_root=app_root,
+        )
+
+    raise ValueError(f"Unsupported runner: {preset.runner}")
 
 
 @dataclass
 class Pipeline:
     """
-    One-preset pipeline (MVP)
+    One-preset pipeline.
     """
     app_root: Path
     preset: Preset
@@ -61,43 +148,81 @@ class Pipeline:
             return "cuda"
         return "cpu"
 
-    def run(self, input_path: str | Path) -> PipelineResult:
+    def run(
+        self,
+        input_path: str | Path,
+        progress_cb: ProgressCB = None,
+        log_cb: LogCB = None,
+    ) -> PipelineResult:
+        def set_progress(v: int) -> None:
+            if progress_cb is not None:
+                progress_cb(int(v))
+
+        def log(msg: str) -> None:
+            if log_cb is not None:
+                log_cb(str(msg))
+
         p = Path(input_path)
         app_root = Path(self.app_root)
 
+        if not p.exists():
+            raise FileNotFoundError(f"Input mesh not found: {p}")
+
+        set_progress(8)
+        log("Loading mesh ...")
+
         # 1) load
         m0 = load_mesh(p)
-        mesh_in = MeshData(pos=m0.vertices, faces=m0.faces, path=str(p), arch=self.preset.arch)
-        meta: Dict[str, Any] = {"input": str(p), "preset": self.preset.key, "runner": self.preset.runner}
+        mesh_in = MeshData(
+            pos=np.asarray(m0.vertices, dtype=np.float32),
+            faces=np.asarray(m0.faces, dtype=np.int64),
+            path=str(p),
+            arch=self.preset.arch,
+        )
+        meta: Dict[str, Any] = {
+            "input": str(p),
+            "preset": self.preset.key,
+            "runner": self.preset.runner,
+            "device_requested": self.device,
+        }
+
+        set_progress(18)
+        log(f"Remeshing to {int(self.preset.target_faces)} faces ...")
 
         # 2) remesh to target faces
         rr = remesh_to_faces(mesh_in.pos, mesh_in.faces, target_faces=int(self.preset.target_faces))
         meta["remesh"] = rr.meta
-        v = rr.vertices
-        f = rr.faces
+        v = np.asarray(rr.vertices, dtype=np.float32)
+        f = np.asarray(rr.faces, dtype=np.int64)
 
-        # 3) orient to reference (geometry-only)
-        if self.preset.do_orient and self.preset.ref_path:
-            ref_lower = _resolve_from_app_root(app_root, self.preset.ref_path)
+        set_progress(32)
 
-            ref_upper = Path(str(ref_lower).replace("007_L.ply", "007_U.ply"))
-            ref_lower2 = Path(str(ref_lower).replace("007_U.ply", "007_L.ply"))
+        # 3) orient to reference
+        if self.preset.do_orient:
+            log("Orienting mesh to reference ...")
+
+            ref_upper, ref_lower = _resolve_reference_paths(app_root, self.preset)
 
             if not ref_upper.exists():
                 raise FileNotFoundError(f"Missing reference (upper): {ref_upper}")
-            if not ref_lower2.exists():
-                raise FileNotFoundError(f"Missing reference (lower): {ref_lower2}")
+            if not ref_lower.exists():
+                raise FileNotFoundError(f"Missing reference (lower): {ref_lower}")
 
             ocfg = OrientConfig(
                 ref_upper=ref_upper,
-                ref_lower=ref_lower2,
-                sample_n=30000,
-                seed=1234,
+                ref_lower=ref_lower,
+                sample_n=int(self.preset.orient_sample_n),
+                seed=int(self.preset.orient_seed),
                 allow_reflection=bool(self.preset.allow_reflection),
             )
             v2, o_meta = orient_mesh_to_reference(v, arch=self.preset.arch, cfg=ocfg)
-            v = v2
-            meta["orient"] = o_meta
+            v = np.asarray(v2, dtype=np.float32)
+            meta["orient"] = {
+                **dict(o_meta or {}),
+                "enabled": True,
+                "ref_upper": str(ref_upper),
+                "ref_lower": str(ref_lower),
+            }
         else:
             meta["orient"] = {"enabled": False}
 
@@ -108,144 +233,68 @@ class Pipeline:
             arch=self.preset.arch,
         )
 
-        # 4) checkpoints (resolve from app_root)
+        set_progress(46)
+        log("Resolving checkpoints ...")
+
+        # 4) resolve checkpoints
         dev = self._pick_device()
+        meta["device_used"] = dev
 
         ckpts_raw = [str(x) for x in (self.preset.ckpts or [])]
         ckpts_exist_abs, ckpts_missing_abs = _resolve_many_from_app_root(app_root, ckpts_raw)
 
         if not ckpts_exist_abs:
-            raise FileNotFoundError(f"No checkpoint found. Missing (resolved): {ckpts_missing_abs[:3]} ...")
+            raise FileNotFoundError(
+                f"No checkpoint found for preset '{self.preset.key}'. "
+                f"Missing resolved paths: {ckpts_missing_abs[:5]}"
+            )
 
         meta["ckpt_missing"] = ckpts_missing_abs
         meta["ckpt_exist"] = ckpts_exist_abs
 
+        set_progress(58)
+        log(f"Building runner: {self.preset.runner} ...")
+
         # 5) build runner
-        if self.preset.runner == "tsmdl":
-            runner = TSMdlRunner.build(
-                model_import=self.preset.model_import,
-                model_kwargs=self.preset.model_kwargs,
-                ckpt_path=ckpts_exist_abs,
-                device=dev,
-                app_root=app_root,
-            )
+        runner = _build_runner(app_root=app_root, preset=self.preset, ckpts_exist_abs=ckpts_exist_abs, device=dev)
 
-        elif self.preset.runner == "pointnetpp":
-            pt_det = bool(_get(self.preset, "pt_deterministic_sampling", True))
-            pt_seed = int(_get(self.preset, "pt_sample_seed", 1234))
-            pt_mc = int(_get(self.preset, "pt_mc_passes", 1))
-
-            # (optional) cover faces parameters if you later wire them in pointnetpp_runner
-            pt_cover = bool(_get(self.preset, "pt_cover_faces", True))
-            pt_cover_jitter = float(_get(self.preset, "pt_cover_jitter", 0.0))
-
-            runner = PointNetPPRunner.build(
-                model_import=self.preset.model_import,
-                model_kwargs=self.preset.model_kwargs,
-                ckpt_path=ckpts_exist_abs,
-                device=dev,
-                num_points=int(self.preset.num_points),
-                point_feature=str(self.preset.point_feature),
-                app_root=app_root,
-                deterministic_sampling=pt_det,
-                sample_seed=pt_seed,
-                mc_passes=pt_mc,
-                cover_faces=pt_cover,
-                cover_jitter=pt_cover_jitter,
-            )
-            meta["pointnetpp_cfg"] = {
-                "deterministic_sampling": pt_det,
-                "sample_seed": pt_seed,
-                "mc_passes": pt_mc,
-                "cover_faces": pt_cover,
-                "cover_jitter": pt_cover_jitter,
+        if self.preset.runner in {"pointnetpp", "pointcnn"}:
+            meta[f"{self.preset.runner}_cfg"] = {
+                "deterministic_sampling": bool(self.preset.pt_deterministic_sampling),
+                "sample_seed": int(self.preset.pt_sample_seed),
+                "mc_passes": int(self.preset.pt_mc_passes),
+                "cover_faces": bool(self.preset.pt_cover_faces),
+                "cover_jitter": float(self.preset.pt_cover_jitter),
                 "num_points": int(self.preset.num_points),
                 "point_feature": str(self.preset.point_feature),
             }
 
-        else:
-            runner = MeshSegNetRunner.build(
-                model_import=self.preset.model_import,
-                model_kwargs=self.preset.model_kwargs,
-                ckpt_path=ckpts_exist_abs,
-                device=dev,
-                app_root=app_root,
-            )
+        set_progress(72)
+        log("Running inference ...")
 
         # 6) inference
         out = runner.infer(mesh_proc, fidx=None)
-        labels = out.labels_face
+        labels = np.asarray(out.labels_face, dtype=np.int64)
         num_classes = int(out.num_classes)
-        meta["infer"] = out.meta
+        out_meta = dict(out.meta or {})
+        meta["infer"] = out_meta
+
+        set_progress(88)
+        log("Post-processing labels ...")
 
         # 7) postprocess
-        if self.preset.do_postprocess:
-            centers = out.meta.get("centers_used", None)
-            probs = out.meta.get("probs_used", None)
+        labels, pp_meta = run_postprocess(
+            labels=labels,
+            faces=mesh_proc.faces,
+            num_classes=num_classes,
+            centers=out_meta.get("centers_used", None),
+            probs=out_meta.get("probs_used", None),
+            preset=self.preset,
+        )
+        meta["postprocess"] = pp_meta
 
-            if centers is not None:
-                centers = np.asarray(centers, dtype=np.float32)
-                probs_np = (np.asarray(probs, dtype=np.float32) if probs is not None else None)
-
-                k = int(_get(self.preset, "pp_knn_k", 16))
-                smooth_iters = int(_get(self.preset, "pp_smooth_iters", 0))
-
-                ungingiva_margin = float(_get(self.preset, "pp_ungingiva_margin", 0.05))
-                ungingiva_min_tooth_p = float(_get(self.preset, "pp_ungingiva_min_tooth_p", 0.12))
-                keep_gingiva_lcc = bool(_get(self.preset, "pp_keep_gingiva_lcc", True))
-
-                conf_thresh = float(_get(self.preset, "pp_conf_thresh", 0.60))
-                conf_neighbor_iters = int(_get(self.preset, "pp_conf_neighbor_iters", 1))
-
-                min_comp_size = int(_get(self.preset, "pp_min_comp_size", 30))
-                clean_iters = int(_get(self.preset, "pp_clean_iters", 1))
-
-                pp_mode = str(_get(self.preset, "pp_mode", "best_visual")).lower()
-
-                if pp_mode == "conservative":
-                    labels = postprocess_labels_conservative(
-                        labels=labels,
-                        centers=centers,
-                        probs=probs_np,
-                        num_classes=num_classes,
-                        k=k,
-                        smooth_iters=max(smooth_iters, 1),
-                        ungingiva_margin=ungingiva_margin,
-                        ungingiva_min_tooth_p=ungingiva_min_tooth_p,
-                        keep_gingiva_lcc=keep_gingiva_lcc,
-                    )
-                    meta["postprocess"] = {"enabled": True, "mode": "conservative"}
-                else:
-                    labels = postprocess_labels_best_visual(
-                        labels=labels,
-                        centers=centers,
-                        probs=probs_np,
-                        num_classes=num_classes,
-                        gingiva_label=16,
-                        k=k,
-                        conf_thresh=conf_thresh,
-                        conf_neighbor_iters=conf_neighbor_iters,
-                        min_comp_size=min_comp_size,
-                        clean_iters=clean_iters,
-                        smooth_iters=smooth_iters,
-                        keep_gingiva_lcc=keep_gingiva_lcc,
-                        ungingiva_margin=ungingiva_margin,
-                        ungingiva_min_tooth_p=ungingiva_min_tooth_p,
-                    )
-                    meta["postprocess"] = {
-                        "enabled": True,
-                        "mode": "best_visual",
-                        "k": k,
-                        "smooth_iters": smooth_iters,
-                        "conf_thresh": conf_thresh,
-                        "conf_neighbor_iters": conf_neighbor_iters,
-                        "min_comp_size": min_comp_size,
-                        "clean_iters": clean_iters,
-                    }
-            else:
-                meta["postprocess"] = {"enabled": False, "reason": "missing centers_used"}
-        else:
-            meta["postprocess"] = {"enabled": False}
+        set_progress(96)
+        log("Finalizing result ...")
 
         return PipelineResult(
             mesh_in=mesh_in,
