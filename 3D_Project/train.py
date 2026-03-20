@@ -25,20 +25,19 @@ if str(ROOT) not in sys.path:
 from src.dataloader.arch import parse_arch_from_filename
 from src.dataloader import build_dataset, build_collate_fn
 
-DEFAULT_CONFIG = "configs/pointcnn15.yaml"
+# ✅ set default to match what you're running
+DEFAULT_CONFIG = "configs/tsgcnet2.yaml"
 
 
 # ============================================================
 # AMP helpers
 # ============================================================
 def make_grad_scaler(use_amp: bool):
-    # torch>=2.0 recommended path
     if hasattr(torch, "amp") and hasattr(torch.amp, "GradScaler"):
         try:
             return torch.amp.GradScaler("cuda", enabled=use_amp)
         except TypeError:
             return torch.amp.GradScaler(enabled=use_amp)
-    # fallback
     return torch.cuda.amp.GradScaler(enabled=use_amp)
 
 
@@ -162,9 +161,7 @@ def count_params(model: nn.Module) -> tuple[int, int]:
 # ============================================================
 # split resolver (train/test) - supports split_root OR train_dir/test_dir
 # ============================================================
-def resolve_train_test_files(
-    cfg: dict, *, dataset_name: Optional[str] = None
-) -> tuple[List[str], List[str], Dict[str, Any]]:
+def resolve_train_test_files(cfg: dict, *, dataset_name: Optional[str] = None) -> tuple[List[str], List[str], Dict[str, Any]]:
     data = cfg["data"]
     recursive = bool(data.get("recursive", False))
 
@@ -248,7 +245,7 @@ def forward_model(
 
 
 # ============================================================
-# masked CE (robust for padding/ignore)
+# losses
 # ============================================================
 def masked_ce_loss(
     ce_none: nn.Module,
@@ -266,15 +263,116 @@ def masked_ce_loss(
     return loss, denom
 
 
+def multiclass_dice_loss(
+    logits_bnc: torch.Tensor,   # (B,N,C)
+    y: torch.Tensor,            # (B,N)
+    mask: torch.Tensor,         # (B,N) bool
+    num_classes: int,
+    eps: float = 1e-6,
+) -> torch.Tensor:
+    """
+    Dice loss averaged over classes that appear in GT (within mask).
+    """
+    B, N, C = logits_bnc.shape
+    assert C == num_classes
+
+    m = mask.bool()
+    if m.sum().item() <= 0:
+        return logits_bnc.sum() * 0.0
+
+    probs = torch.softmax(logits_bnc, dim=-1)
+    y_clamped = y.clamp(min=0)
+    y_oh = torch.nn.functional.one_hot(y_clamped, num_classes=num_classes).to(dtype=probs.dtype)
+
+    m_f = m.to(dtype=probs.dtype).unsqueeze(-1)
+    probs = probs * m_f
+    y_oh = y_oh * m_f
+
+    inter = (probs * y_oh).sum(dim=(0, 1))
+    p_sum = probs.sum(dim=(0, 1))
+    y_sum = y_oh.sum(dim=(0, 1))
+    denom = (p_sum + y_sum).clamp_min(eps)
+
+    dice = (2.0 * inter + eps) / (denom + eps)
+
+    present = (y_sum > 0.0)
+    dice_mean = dice[present].mean() if present.any() else dice.mean()
+    return 1.0 - dice_mean
+
+
+@torch.no_grad()
+def estimate_class_weights(
+    loader: DataLoader,
+    device: torch.device,
+    num_classes: int,
+    ignore_index: int,
+    max_batches: int,
+) -> Optional[torch.Tensor]:
+    """
+    Estimate class weights from first max_batches of train loader using mask.
+    Returns weight tensor (C,) on device, normalized to mean=1 and clipped.
+    """
+    if max_batches <= 0:
+        return None
+
+    counts = torch.zeros(num_classes, dtype=torch.long, device=device)
+    seen = 0
+
+    for batch in loader:
+        y = batch["y"].to(device, non_blocking=True)
+
+        mask = batch.get("mask", None)
+        if mask is None or (not torch.is_tensor(mask)):
+            m = (y != ignore_index)
+        else:
+            m = mask.to(device, non_blocking=True).bool()
+
+        if m.any():
+            yy = y[m]
+            yy = yy[(yy >= 0) & (yy < num_classes)]
+            if yy.numel() > 0:
+                counts += torch.bincount(yy, minlength=num_classes)
+
+        seen += 1
+        if seen >= max_batches:
+            break
+
+    if counts.sum().item() == 0:
+        return None
+
+    freq = counts.to(dtype=torch.float32)
+    inv = 1.0 / (freq + 1.0)
+    inv = inv / inv.mean().clamp_min(1e-6)
+    inv = torch.clamp(inv, min=0.25, max=5.0)
+    return inv
+
+
+def make_total_loss_fn(cfg: dict, ce_none: nn.Module, num_classes: int):
+    loss_cfg = (cfg.get("train", {}) or {}).get("loss", {}) or {}
+    use_dice = bool(loss_cfg.get("use_dice", False))
+    dice_w = float(loss_cfg.get("dice_weight", 0.0))
+
+    def _fn(logits_bnc: torch.Tensor, y: torch.Tensor, mask: torch.Tensor):
+        ce, den = masked_ce_loss(ce_none, logits_bnc, y, mask, num_classes)
+        if not use_dice or dice_w <= 0.0:
+            return ce, den, {"ce": float(ce.item()), "dice": None}
+
+        d = multiclass_dice_loss(logits_bnc, y, mask, num_classes=num_classes)
+        total = (1.0 - dice_w) * ce + dice_w * d
+        return total, den, {"ce": float(ce.item()), "dice": float(d.item())}
+
+    return _fn
+
+
 @torch.no_grad()
 def eval_loss(
     model: nn.Module,
     loader: Optional[DataLoader],
     device: torch.device,
-    ce_none: nn.Module,
     num_classes: int,
     forward_type: str,
     ignore_index: int,
+    loss_fn,
 ) -> Optional[float]:
     if loader is None:
         return None
@@ -295,7 +393,7 @@ def eval_loss(
         logits = forward_model(model, batch, device, forward_type)
         logits_bnc = normalize_logits_to_bnc(logits, num_classes)
 
-        loss, den = masked_ce_loss(ce_none, logits_bnc, y, mask, num_classes)
+        loss, den, _parts = loss_fn(logits_bnc, y, mask)
         if den > 0:
             loss_sum += float(loss.item()) * den
             den_sum += den
@@ -331,6 +429,8 @@ def train_one_arch(
     use_amp = bool(exp.get("amp", False)) and device.type == "cuda"
     scaler = make_grad_scaler(use_amp)
 
+    grad_clip = float(exp.get("grad_clip", 0.0) or 0.0)
+
     data = cfg["data"]
     mode = str(data["mode"]).lower()
     ignore_index = int(data.get("ignore_index", -1))
@@ -340,8 +440,6 @@ def train_one_arch(
     batch_size = int(data["batch_size"])
     num_workers = int(data.get("num_workers", 0))
     pin_memory = bool(data.get("pin_memory", True)) and (device.type == "cuda")
-
-    # IMPORTANT for MeshSegNet (BatchNorm): avoid last batch B=1
     drop_last_train = bool(data.get("drop_last_train", True)) and (batch_size > 1)
 
     tr_u, tr_l = split_by_arch(files_train_all)
@@ -396,7 +494,48 @@ def train_one_arch(
     else:
         raise ValueError(f"Unknown optimizer: {opt}")
 
-    ce_none = nn.CrossEntropyLoss(ignore_index=ignore_index, reduction="none")
+    # ---- optional scheduler (✅ fixed: verbose compatibility)
+    sch_cfg = (exp.get("scheduler", {}) or {})
+    use_sch = bool(sch_cfg.get("enable", False))
+    scheduler = None
+    if use_sch:
+        patience = int(sch_cfg.get("patience", 6))
+        factor = float(sch_cfg.get("factor", 0.5))
+        min_lr = float(sch_cfg.get("min_lr", 1.0e-6))
+
+        # PyTorch บางเวอร์ชันตัด arg 'verbose' ออก -> ลองใส่ก่อน ถ้า error ค่อย fallback
+        try:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                patience=patience,
+                factor=factor,
+                min_lr=min_lr,
+                verbose=True,
+            )
+        except TypeError:
+            scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer,
+                mode="min",
+                patience=patience,
+                factor=factor,
+                min_lr=min_lr,
+            )
+
+    # ---- optional class weights
+    loss_cfg = (cfg.get("train", {}) or {}).get("loss", {}) or {}
+    use_cw = bool(loss_cfg.get("use_class_weights", False))
+    cw_batches = int(loss_cfg.get("class_weight_max_batches", 0))
+    class_w = None
+    if use_cw and cw_batches > 0:
+        class_w = estimate_class_weights(dl_train, device, num_classes, ignore_index, cw_batches)
+        if class_w is not None:
+            print(f"[LOSS] class_weights enabled (mean=1, clipped) | weights={class_w.detach().cpu().numpy().round(3)}")
+
+    ce_none = nn.CrossEntropyLoss(ignore_index=ignore_index, reduction="none", weight=class_w)
+
+    # ---- total loss fn (CE or CE+Dice)
+    loss_fn = make_total_loss_fn(cfg, ce_none, num_classes)
 
     arch_dir.mkdir(parents=True, exist_ok=True)
     best_path = arch_dir / "best_model.pth"
@@ -429,6 +568,7 @@ def train_one_arch(
         model.train()
         loss_sum = 0.0
         den_sum = 0
+        last_parts = {}
 
         pbar = tqdm(
             total=len(dl_train),
@@ -453,33 +593,47 @@ def train_one_arch(
             with autocast_ctx(use_amp):
                 logits = forward_model(model, batch, device, forward_type)
                 logits_bnc = normalize_logits_to_bnc(logits, num_classes)
-                loss, den = masked_ce_loss(ce_none, logits_bnc, y, mask, num_classes)
+                loss, den, parts = loss_fn(logits_bnc, y, mask)
 
             if use_amp:
                 scaler.scale(loss).backward()
+                if grad_clip and grad_clip > 0:
+                    scaler.unscale_(optimizer)
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 scaler.step(optimizer)
                 scaler.update()
             else:
                 loss.backward()
+                if grad_clip and grad_clip > 0:
+                    torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
                 optimizer.step()
 
             if den > 0:
                 loss_sum += float(loss.item()) * den
                 den_sum += den
+                last_parts = parts
 
             pbar.update(1)
-            pbar.set_postfix(loss=f"{float(loss.item()):.4f}", valid=f"{den}")
+            postfix = {"loss": f"{float(loss.item()):.4f}", "valid": f"{den}"}
+            if parts.get("dice", None) is not None:
+                postfix["ce"] = f"{parts['ce']:.3f}"
+                postfix["dice"] = f"{parts['dice']:.3f}"
+            pbar.set_postfix(**postfix)
 
         pbar.close()
 
         train_loss = (loss_sum / float(max(den_sum, 1))) if den_sum > 0 else float("nan")
-        test_loss = eval_loss(model, dl_test, device, ce_none, num_classes, forward_type, ignore_index)
+        test_loss = eval_loss(model, dl_test, device, num_classes, forward_type, ignore_index, loss_fn)
 
-        score = test_loss if (test_loss is not None) else train_loss
+        metric = test_loss if (test_loss is not None) else train_loss
+        if scheduler is not None and metric is not None:
+            scheduler.step(metric)
+
+        lr_now = float(optimizer.param_groups[0]["lr"])
         if test_loss is not None:
-            print(f"[Epoch {epoch:03d}][{arch}] train_loss={train_loss:.6f} test_loss={test_loss:.6f}")
+            print(f"[Epoch {epoch:03d}][{arch}] train_loss={train_loss:.6f} test_loss={test_loss:.6f} lr={lr_now:.2e}")
         else:
-            print(f"[Epoch {epoch:03d}][{arch}] train_loss={train_loss:.6f}")
+            print(f"[Epoch {epoch:03d}][{arch}] train_loss={train_loss:.6f} lr={lr_now:.2e}")
 
         torch.save(
             {
@@ -491,6 +645,7 @@ def train_one_arch(
                 "model_kwargs": model_kwargs,
                 "model_state": model.state_dict(),
                 "optimizer_state": optimizer.state_dict(),
+                "scheduler_state": scheduler.state_dict() if scheduler is not None else None,
                 "scaler_state": scaler.state_dict() if use_amp else None,
                 "train_loss": train_loss,
                 "test_loss": test_loss,
@@ -501,8 +656,8 @@ def train_one_arch(
             last_path,
         )
 
-        if (score is not None) and (score < best_score):
-            best_score = float(score)
+        if (metric is not None) and (metric < best_score):
+            best_score = float(metric)
             torch.save(
                 {
                     "epoch": epoch,
@@ -513,6 +668,7 @@ def train_one_arch(
                     "model_kwargs": model_kwargs,
                     "model_state": model.state_dict(),
                     "optimizer_state": optimizer.state_dict(),
+                    "scheduler_state": scheduler.state_dict() if scheduler is not None else None,
                     "scaler_state": scaler.state_dict() if use_amp else None,
                     "train_loss": train_loss,
                     "test_loss": test_loss,

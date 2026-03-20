@@ -53,11 +53,8 @@ def _ensure_dtype(out: Dict[str, Any]) -> Dict[str, Any]:
         else:
             raise TypeError(f"edge_index must be Tensor or list[Tensor], got {type(out['edge_index'])}")
 
-    # ✅ IMPORTANT: keep F_used as list[int] for FastTGCN
-    # (Do NOT convert to tensor here.)
-    # If you want tensor too, add extra field:
+    # IMPORTANT: keep F_used as list[int]
     if "F_used" in out and isinstance(out["F_used"], list):
-        # sanitize to python ints
         out["F_used"] = [int(x) for x in out["F_used"]]
         out["F_used_t"] = torch.tensor(out["F_used"], dtype=torch.long)
 
@@ -87,7 +84,7 @@ def collate_face(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
         "arch": [s["arch"] for s in samples],
         "path": [s["path"] for s in samples],
         "meta": [s.get("meta", {}) for s in samples],
-        "F_used": [int(s.get("F_used", s["x"].shape[0])) for s in samples],  # keep list[int]
+        "F_used": [int(s.get("F_used", s["x"].shape[0])) for s in samples],
     }
 
     pos = _stack_if_present(samples, "pos")
@@ -102,10 +99,10 @@ def collate_face(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
     if nbr is not None:
         out["nbr"] = nbr
 
-    # Fast-TGCN optional branches
     x_c = _stack_if_present(samples, "x_c")
     if x_c is not None:
         out["x_c"] = x_c
+
     x_n = _stack_if_present(samples, "x_n")
     if x_n is not None:
         out["x_n"] = x_n
@@ -128,23 +125,46 @@ def _is_edge_index_list(v: Any) -> bool:
 
 
 def collate_graph(samples: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """
+    Backward-compatible graph collate:
+      - old graph datasets: require edge_index and keep it as list[Tensor]
+      - new TSGCNet2 graph dataset: allow nbr without edge_index
+    """
     out = collate_face(samples)
     if not samples:
         return out
 
-    # edge_index must exist per-sample for graph mode
-    bad = []
-    for i, s in enumerate(samples):
-        if "edge_index" not in s:
-            bad.append(i)
-            continue
-        ei = s["edge_index"]
-        if not (_is_edge_index_tensor(ei) or _is_edge_index_list(ei)):
-            bad.append(i)
+    has_edge_index = []
+    has_nbr = []
 
-    if bad:
-        raise KeyError(f"Graph collate requires edge_index in every sample. Bad indices={bad}")
+    for s in samples:
+        ei = s.get("edge_index", None)
+        nb = s.get("nbr", None)
 
-    # keep per-sample graph (Fast-TGCN style)
-    out["edge_index"] = [s["edge_index"] for s in samples]  # list[(2,E)]
-    return _ensure_dtype(out)
+        has_edge_index.append(_is_edge_index_tensor(ei) or _is_edge_index_list(ei))
+        has_nbr.append(torch.is_tensor(nb))
+
+    any_edge = any(has_edge_index)
+    any_nbr = any(has_nbr)
+
+    # case 1: old graph pipeline
+    if any_edge:
+        bad = [i for i, ok in enumerate(has_edge_index) if not ok]
+        if bad:
+            raise KeyError(
+                f"Mixed graph batch is not allowed: some samples have edge_index, some do not. Bad indices={bad}"
+            )
+        out["edge_index"] = [s["edge_index"] for s in samples]
+        return _ensure_dtype(out)
+
+    # case 2: new TSGCNet2 pipeline
+    if any_nbr:
+        bad = [i for i, ok in enumerate(has_nbr) if not ok]
+        if bad:
+            raise KeyError(
+                f"Graph collate expected nbr in every sample for TSGCNet2-style batch. Bad indices={bad}"
+            )
+        return _ensure_dtype(out)
+
+    # case 3: invalid graph batch
+    raise KeyError("Graph collate requires either edge_index or nbr in every sample.")

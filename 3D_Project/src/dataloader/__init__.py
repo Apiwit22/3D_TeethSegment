@@ -10,11 +10,16 @@ from .base import BaseDentalDatasetConfig
 from .points_base import PointDataset
 from .faces_base import FaceDataset
 from .graph_base import GraphDataset
-
-# ✅ เพิ่ม: dataset สำหรับฟีเจอร์ 24D แบบ two-stream (TSGCNet)
 from .faces_twostream24 import TwoStream24FaceDataset
 
+# old extra datasets
+from .face_baseforimesh import FaceDatasetIMesh
+from .face_baseforimesh2 import FaceDatasetIMesh2
+
 from .collate import collate_point, collate_face, collate_graph
+
+# NEW: TSGCNet2 graph dataset
+from .graph_fortsgcnet import GraphForTSGCNetDataset
 
 
 def _get_mode(cfg: Dict[str, Any]) -> str:
@@ -26,18 +31,19 @@ def _get_mode(cfg: Dict[str, Any]) -> str:
 
 
 def _get_face_feature(cfg: Dict[str, Any]) -> str:
-    """
-    อ่านชื่อ feature สำหรับ face-mode
-    - ถ้าไม่มีจะให้ default เป็น 'center_normal' (เหมือนเดิม)
-    """
     data = cfg.get("data", {})
     if not isinstance(data, dict):
         return "center_normal"
     return str(data.get("face_feature", "center_normal")).lower().strip()
 
 
-# ✅ ชุดชื่อที่เราถือว่าเป็นฟีเจอร์แบบ two-stream 24D
-# (รวม alias เก่าไว้ เผื่อ config เดิมบางอันยังใช้)
+def _get_graph_loader(cfg: Dict[str, Any]) -> str:
+    data = cfg.get("data", {})
+    if not isinstance(data, dict):
+        return ""
+    return str(data.get("graph_loader", "")).lower().strip()
+
+
 _TWO_STREAM_24_ALIASES = {
     "twostream24",
     "two_stream24",
@@ -47,52 +53,66 @@ _TWO_STREAM_24_ALIASES = {
     "tgcn24",
     "fast_tgcn_24",
     "paper24",
+    "twostream24_topo",
+}
+
+_MESHSEGNET15_ALIASES = {
+    "meshsegnet15",
+    "msn15",
+    "mesh15",
+}
+
+_TSMDL15_ALIASES = {
+    "tsmdl15",
+    "ts-mdl15",
+    "ts_mdl15",
+    "imesh15",
+    "paper15",
 }
 
 
 def build_dataset(files: List[str], cfg: Dict[str, Any], arch: str):
-    """
-    Factory: build dataset by cfg['data']['mode'] ∈ {'point','face','graph'}.
-
-    arch:
-      - 'upper' / 'lower' => force arch for all files
-      - 'both'            => infer per-file from filename (parse_arch_from_filename)
-    """
     mode = _get_mode(cfg)
+    feat = _get_face_feature(cfg)
 
     if mode == "point":
         return PointDataset.from_config(files, cfg, arch=arch)
 
     if mode == "face":
-        # ✅ ถ้า face_feature เป็น two-stream 24D -> ใช้ TwoStream24FaceDataset
-        feat = _get_face_feature(cfg)
+        # old two-stream 24D loader stays unchanged
         if feat in _TWO_STREAM_24_ALIASES:
             return TwoStream24FaceDataset.from_config(files, cfg, arch=arch)
 
-        # ไม่ใช่ two-stream -> ใช้ FaceDataset เดิม (ไม่กระทบโมเดลอื่น)
+        if feat in _TSMDL15_ALIASES:
+            return FaceDatasetIMesh2.from_config(files, cfg, arch=arch)
+
+        if feat in _MESHSEGNET15_ALIASES:
+            return FaceDatasetIMesh.from_config(files, cfg, arch=arch)
+
         return FaceDataset.from_config(files, cfg, arch=arch)
 
     if mode == "graph":
-        # graph-mode ใช้ GraphDataset เหมือนเดิม (รองรับ edge_index ฯลฯ)
+        graph_loader = _get_graph_loader(cfg)
+
+        # NEW SAFE ROUTE:
+        # only use new graph loader when explicitly requested
+        if graph_loader in {"tsgcnet2", "graph_fortsgcnet"}:
+            return GraphForTSGCNetDataset.from_config(files, cfg, arch=arch)
+
+        # backward-compatible old route
         return GraphDataset.from_config(files, cfg, arch=arch)
 
     raise ValueError(f"Unknown data.mode: {mode} (expected point/face/graph)")
 
 
 def build_collate_fn(cfg: Dict[str, Any]) -> Callable:
-    """
-    Return the correct collate_fn for DataLoader.
-    """
     mode = _get_mode(cfg)
-
     if mode == "point":
         return collate_point
     if mode == "face":
-        # collate_face รองรับ x_c/x_n อยู่แล้ว (ถ้ามีใน sample)
         return collate_face
     if mode == "graph":
         return collate_graph
-
     raise ValueError(f"Unknown data.mode: {mode} (expected point/face/graph)")
 
 
@@ -102,7 +122,10 @@ __all__ = [
     "BaseDentalDatasetConfig",
     "PointDataset",
     "FaceDataset",
-    "TwoStream24FaceDataset",  # ✅ เพิ่ม export เผื่ออยาก import ตรง ๆ
+    "FaceDatasetIMesh",
+    "FaceDatasetIMesh2",
+    "TwoStream24FaceDataset",
+    "GraphForTSGCNetDataset",
     "GraphDataset",
     "collate_point",
     "collate_face",

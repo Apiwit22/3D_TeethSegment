@@ -1,25 +1,10 @@
-# visualize.py
-# ------------------------------------------------------------
-# Visualizer (Windows local) + GT export
-# Supports:
-#   - Face-mode models (e.g., MeshSegNetBatch): predict per-face
-#   - Point-mode models (e.g., PointNet2Seg):  predict per-point then map -> per-face for export
-#   - Graph-mode models: treated like face-mode for export
-#
-# Key fixes:
-#   - Read model class from cfg['model']['import'] (PointNet++ uses this)
-#   - Use cfg['data']['mode'] automatically when MODE="auto"
-#   - call_by_signature supports positional args
-#   - build_dataset signature-robust: supports build_dataset(files, cfg, ...) OR build_dataset(cfg, files=...)
-#   - Point-mode: map point labels -> face labels (KDTree)
-# ------------------------------------------------------------
-
 from __future__ import annotations
 
 import copy
 import inspect
 import json
 import shutil
+from collections import deque
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -29,31 +14,44 @@ import yaml
 from torch.utils.data import DataLoader
 
 # ============================================================
-# CONFIG (แก้แค่ตรงนี้)
+# CONFIG 
 # ============================================================
-RUN_DIR = Path(r"D:\Project_Gujabaa\3D_Project\checkpoints\fast_tgcn_final\FastTGCN_IoSSeg_ALLDATA_200epoch_run1")
+RUN_DIR = Path(r"D:\Project_Gujabaa\3D_Project\checkpoints\tsgcnet\TSGCNet2_IoSSeg_ALLDATA_200epoch_run1")
 SPLIT_ROOT = Path(r"D:\Project_Gujabaa\3D_Project\FinalDataset_Split")
-VIS_OUT = Path(r"D:\Project_Gujabaa\3D_Project\vis_results") / RUN_DIR.name
+VIS_OUT = Path(r"D:\Project_Gujabaa\3D_Project\vis_final\tsgcnet") / RUN_DIR.name
 
 CKPT_TAG = "best"  # "best" or "last"
 ARCHES = ["upper", "lower"]
-
-# "auto" => use cfg['data']['mode'] (recommended)
-# or force "face" / "point" / "graph"
 MODE = "auto"
-
-# base.py ของคุณรับ unknown_policy แค่ raise/ignore
 UNKNOWN_POLICY = "ignore"
-
-# alignment mode: "auto" / "raw" / "centroid" / "lexsort"
 ALIGN_MODE = "auto"
 
 # Export GT
 EXPORT_GT = True
 EXPORT_GT_PALETTE_COPY = True
 
-# pred smoothing หลัง align (0 ปิด)
-SMOOTH_ITERS = 1
+# ------------------------------------------------------------
+# Post-process: confidence handling (Policy C)
+# ------------------------------------------------------------
+CONF_THRESH = 0.60               
+CONF_LOWCONF_POLICY = "neighbor"
+CONF_NEIGHBOR_ITERS = 1          
+CONF_APPLY_BEFORE_CLEAN = True   
+CONF_APPLY_BEFORE_SMOOTH = True  
+
+# ------------------------------------------------------------
+# Post-process: component cleanup 
+# ------------------------------------------------------------
+CLEAN_SMALL_COMPONENTS = True
+MIN_COMP_SIZE = 20               
+CLEAN_ITERS = 1                  
+
+# ------------------------------------------------------------
+# Post-process: smoothing 
+# ------------------------------------------------------------
+SMOOTH_ITERS = 1                 
+SMOOTH_METHOD = "adjacency"      
+SMOOTH_KNN_K = 16                
 
 # แยก subfolder ตามเคส
 CASE_SUBFOLDERS = True
@@ -85,9 +83,17 @@ except Exception:
 # ============================================================
 # Imports from your project
 # ============================================================
-from src.dataloader import build_dataset
-from src.dataloader.collate import collate_face, collate_point, collate_graph
-from src.dataloader.fdi_colors import FDIColorMap, GINGIVA_LABEL
+try:
+    from src.dataloader import build_dataset
+    from src.dataloader.collate import collate_face, collate_point, collate_graph
+    from src.dataloader.fdi_colors import FDIColorMap, GINGIVA_LABEL
+except Exception as e:
+    raise RuntimeError(
+        "Failed to import from src.dataloader.\n"
+        "Fix src/dataloader/__init__.py to avoid hard-importing missing optional modules.\n"
+        f"Original error: {repr(e)}"
+    ) from e
+
 
 # ============================================================
 # Utilities
@@ -135,9 +141,6 @@ DEFAULT_TEST_FOLD = {
 
 
 def get_test_fold_for_dataset(cfg: dict, dataset: str) -> str:
-    """
-    Prefer cfg['data']['test_fold_by_dataset'] if exists, else fallback mapping.
-    """
     tf = (cfg.get("data", {}) or {}).get("test_fold_by_dataset", None)
     if isinstance(tf, dict) and dataset in tf:
         return str(tf[dataset])
@@ -163,9 +166,6 @@ def _to_numpy(x: Any) -> Optional[np.ndarray]:
 
 
 def _standardize(P: np.ndarray) -> np.ndarray:
-    """
-    Standardize points for stable nearest mapping: center and scale by max radius.
-    """
     P = np.asarray(P, dtype=np.float64)
     c = P.mean(axis=0, keepdims=True)
     Q = P - c
@@ -174,12 +174,12 @@ def _standardize(P: np.ndarray) -> np.ndarray:
 
 
 # ============================================================
-# Model builder (FIX: support cfg['model']['import'])
+# Model builder
 # ============================================================
 def build_model_from_cfg(cfg: dict) -> Tuple[torch.nn.Module, str]:
     m = cfg.get("model", {}) or {}
     model_path = (
-        m.get("import")  # ✅ key used by pointnetpp configs
+        m.get("import")
         or m.get("name")
         or m.get("target")
         or m.get("impl")
@@ -214,7 +214,6 @@ def _looks_like_state_dict(obj: Any) -> bool:
 
 def _iter_state_dict_candidates(ckpt: Any) -> List[Dict[str, Any]]:
     cands: List[Dict[str, Any]] = []
-
     if _looks_like_state_dict(ckpt):
         return [ckpt]
 
@@ -222,7 +221,7 @@ def _iter_state_dict_candidates(ckpt: Any) -> List[Dict[str, Any]]:
         keys = [
             "state_dict",
             "model_state_dict",
-            "model_state",  # <- your trainer uses this
+            "model_state",
             "model",
             "net",
             "network",
@@ -241,6 +240,7 @@ def _iter_state_dict_candidates(ckpt: Any) -> List[Dict[str, Any]]:
                 if _looks_like_state_dict(v2):
                     cands.append(v2)
                     continue
+
         for _, v in ckpt.items():
             if _looks_like_state_dict(v):
                 cands.append(v)
@@ -249,7 +249,6 @@ def _iter_state_dict_candidates(ckpt: Any) -> List[Dict[str, Any]]:
                 if _looks_like_state_dict(v2):
                     cands.append(v2)
 
-    # de-dup
     if len(cands) > 1:
         seen = set()
         uniq = []
@@ -301,7 +300,9 @@ def _match_score(sd: Dict[str, Any], model_keys: set[str]) -> int:
     return sum(1 for k in sd.keys() if k in model_keys)
 
 
-def load_checkpoint_to_model_best_effort(model: torch.nn.Module, ckpt_path: Path) -> Tuple[List[str], List[str], int, List[str]]:
+def load_checkpoint_to_model_best_effort(
+    model: torch.nn.Module, ckpt_path: Path
+) -> Tuple[List[str], List[str], int, List[str]]:
     try:
         ckpt = torch.load(str(ckpt_path), map_location="cpu", weights_only=True)
     except TypeError:
@@ -360,9 +361,6 @@ def load_checkpoint_to_model_best_effort(model: torch.nn.Module, ckpt_path: Path
 # Flexible call by signature (dataset/collate)
 # ============================================================
 def call_by_signature(fn, *args, **kwargs):
-    """
-    Call fn with positional args + only keyword args that exist in signature.
-    """
     sig = inspect.signature(fn)
     filtered = {}
     for k, v in kwargs.items():
@@ -372,19 +370,12 @@ def call_by_signature(fn, *args, **kwargs):
 
 
 def call_build_dataset_flexible(cfg_full: dict, files: List[str], arch: str, mode: str):
-    """
-    Robustly call src.dataloader.build_dataset no matter whether signature is:
-      - build_dataset(files, cfg, arch=?, mode=?)
-      - build_dataset(cfg, files=?, arch=?, mode=?)
-    """
     sig = inspect.signature(build_dataset)
     params = list(sig.parameters.values())
 
-    # Case A: first positional param is named 'files' (your project)
     if len(params) >= 2 and params[0].name in ("files", "file_list", "paths"):
         return call_by_signature(build_dataset, files, cfg_full, arch=arch, mode=mode)
 
-    # Case B: first positional param looks like cfg
     return call_by_signature(build_dataset, cfg_full, files=files, arch=arch, mode=mode)
 
 
@@ -398,21 +389,21 @@ def call_build_collate_flexible(mode: str):
 
 
 # ============================================================
-# Pred alignment/smoothing (face-based)
+# Alignment utilities (labels/conf -> per-mesh-face)
 # ============================================================
-def align_pred_to_mesh(pred: np.ndarray, mesh: trimesh.Trimesh, batch: Any) -> Tuple[np.ndarray, Dict[str, Any]]:
-    pred = pred.reshape(-1).astype(np.int64)
+def align_array_to_mesh(arr: np.ndarray, mesh: trimesh.Trimesh, batch: Any) -> Tuple[np.ndarray, Dict[str, Any]]:
+    arr = np.asarray(arr).reshape(-1)
     F = int(mesh.faces.shape[0])
-    info = {"method": "raw", "unique_faces": int(len(pred)), "unassigned": 0, "k": 10}
+    info = {"method": "raw", "unique_faces": int(len(arr)), "unassigned": 0, "k": 1}
 
     if ALIGN_MODE == "raw":
-        if len(pred) != F:
-            out = np.full((F,), int(GINGIVA_LABEL), dtype=np.int64)
-            n = min(F, len(pred))
-            out[:n] = pred[:n]
+        if len(arr) != F:
+            out = np.zeros((F,), dtype=arr.dtype)
+            n = min(F, len(arr))
+            out[:n] = arr[:n]
             info["method"] = "raw_crop_pad"
             return out, info
-        return pred, info
+        return arr, info
 
     if ALIGN_MODE in ("auto", "centroid"):
         pos = None
@@ -420,67 +411,90 @@ def align_pred_to_mesh(pred: np.ndarray, mesh: trimesh.Trimesh, batch: Any) -> T
             pos = _to_numpy(batch["pos"])
 
         if pos is None:
-            if len(pred) != F:
-                out = np.full((F,), int(GINGIVA_LABEL), dtype=np.int64)
-                n = min(F, len(pred))
-                out[:n] = pred[:n]
+            if len(arr) != F:
+                out = np.zeros((F,), dtype=arr.dtype)
+                n = min(F, len(arr))
+                out[:n] = arr[:n]
                 info["method"] = "centroid_fallback_crop_pad"
                 return out, info
             info["method"] = "centroid_fallback_identity"
-            return pred, info
+            return arr, info
 
         pos = np.asarray(pos)
         if pos.ndim == 3 and pos.shape[0] == 1:
             pos = pos[0]
         if pos.ndim != 2 or pos.shape[1] != 3:
-            if len(pred) != F:
-                out = np.full((F,), int(GINGIVA_LABEL), dtype=np.int64)
-                n = min(F, len(pred))
-                out[:n] = pred[:n]
+            if len(arr) != F:
+                out = np.zeros((F,), dtype=arr.dtype)
+                n = min(F, len(arr))
+                out[:n] = arr[:n]
                 info["method"] = "centroid_badpos_crop_pad"
                 return out, info
             info["method"] = "centroid_badpos_identity"
-            return pred, info
+            return arr, info
 
         P = _standardize(pos)
         C = _standardize(np.asarray(mesh.triangles_center, dtype=np.float64))
 
         if _cKDTree is None:
-            if len(pred) != F:
-                out = np.full((F,), int(GINGIVA_LABEL), dtype=np.int64)
-                n = min(F, len(pred))
-                out[:n] = pred[:n]
+            if len(arr) != F:
+                out = np.zeros((F,), dtype=arr.dtype)
+                n = min(F, len(arr))
+                out[:n] = arr[:n]
                 info["method"] = "no_kdtree_crop_pad"
                 return out, info
             info["method"] = "no_kdtree_identity"
-            return pred, info
+            return arr, info
 
         tree = _cKDTree(P)
         _, nn = tree.query(C, k=1, workers=-1)
         nn = nn.astype(np.int64)
 
-        out = pred[nn] if len(pred) == len(P) else pred[: len(nn)]
+        if len(arr) == len(P):
+            out = arr[nn]
+        else:
+            out = np.zeros((F,), dtype=arr.dtype)
+            n = min(F, len(arr))
+            out[:n] = arr[:n]
+
         info["method"] = "centroid"
         info["unique_faces"] = int(len(out))
-        return out.astype(np.int64), info
+        return out, info
 
     if ALIGN_MODE == "lexsort":
         C = np.asarray(mesh.triangles_center, dtype=np.float64)
         order = np.lexsort((C[:, 2], C[:, 1], C[:, 0]))
-        out = np.full((F,), int(GINGIVA_LABEL), dtype=np.int64)
-        n = min(F, len(pred))
-        out[order[:n]] = pred[:n]
+        out = np.zeros((F,), dtype=arr.dtype)
+        n = min(F, len(arr))
+        out[order[:n]] = arr[:n]
         info["method"] = "lexsort"
         info["unique_faces"] = int(n)
         return out, info
 
-    if len(pred) != F:
-        out = np.full((F,), int(GINGIVA_LABEL), dtype=np.int64)
-        n = min(F, len(pred))
-        out[:n] = pred[:n]
+    if len(arr) != F:
+        out = np.zeros((F,), dtype=arr.dtype)
+        n = min(F, len(arr))
+        out[:n] = arr[:n]
         info["method"] = "fallback_crop_pad"
         return out, info
-    return pred, info
+    return arr, info
+
+
+# ============================================================
+# Smoothing + Policy C (neighbor fill)
+# ============================================================
+def _build_face_neighbors(mesh: trimesh.Trimesh) -> List[List[int]]:
+    adj = getattr(mesh, "face_adjacency", None)
+    F = int(mesh.faces.shape[0])
+    neigh: List[List[int]] = [[] for _ in range(F)]
+    if adj is None or len(adj) == 0:
+        return neigh
+    for a, b in adj:
+        a = int(a)
+        b = int(b)
+        neigh[a].append(b)
+        neigh[b].append(a)
+    return neigh
 
 
 def smooth_labels_knn(centers: np.ndarray, labels: np.ndarray, k: int = 16, iters: int = 1) -> np.ndarray:
@@ -503,8 +517,140 @@ def smooth_labels_knn(centers: np.ndarray, labels: np.ndarray, k: int = 16, iter
     return lbl
 
 
+def smooth_labels_adjacency(mesh: trimesh.Trimesh, labels: np.ndarray, iters: int = 1) -> np.ndarray:
+    if iters <= 0:
+        return labels
+
+    neigh = _build_face_neighbors(mesh)
+    lbl = labels.astype(np.int64).copy()
+    F = len(lbl)
+
+    for _ in range(iters):
+        new = lbl.copy()
+        for i in range(F):
+            ns = neigh[i]
+            if not ns:
+                continue
+            vals = lbl[ns]
+            u, c = np.unique(vals, return_counts=True)
+            new[i] = int(u[np.argmax(c)])
+        lbl = new
+    return lbl
+
+
+def fill_lowconf_by_neighbors(
+    mesh: trimesh.Trimesh,
+    labels: np.ndarray,
+    conf: np.ndarray,
+    thresh: float,
+    iters: int = 1,
+) -> np.ndarray:
+    if thresh <= 0:
+        return labels
+
+    neigh = _build_face_neighbors(mesh)
+    labels = labels.astype(np.int64).copy()
+    conf = np.asarray(conf, dtype=np.float32).reshape(-1)
+
+    low = conf < float(thresh)
+    if not np.any(low):
+        return labels
+
+    for _ in range(int(iters)):
+        changed = 0
+        new = labels.copy()
+        for i in np.where(low)[0]:
+            ns = neigh[i]
+            if not ns:
+                continue
+            ns_good = [j for j in ns if not low[j]]
+            src = ns_good if ns_good else ns
+            vals = labels[src]
+            u, c = np.unique(vals, return_counts=True)
+            new_label = int(u[np.argmax(c)])
+            if new_label != labels[i]:
+                new[i] = new_label
+                changed += 1
+        labels = new
+        if changed == 0:
+            break
+    return labels
+
+
 # ============================================================
-# Point mode: point pred -> face pred
+# Component cleanup: remove tiny islands
+# ============================================================
+def cleanup_small_components(
+    mesh: trimesh.Trimesh,
+    labels: np.ndarray,
+    min_size: int = 20,
+    iters: int = 1,
+) -> np.ndarray:
+    """
+    Remove small connected components (by face adjacency).
+    For each small component, reassign its faces to the majority label
+    among its boundary neighbors (neighbors outside the component).
+    """
+    if min_size <= 0 or iters <= 0:
+        return labels
+
+    neigh = _build_face_neighbors(mesh)
+    labels = labels.astype(np.int64).copy()
+    F = len(labels)
+
+    for _ in range(int(iters)):
+        visited = np.zeros((F,), dtype=np.uint8)
+        changed = 0
+
+        for start in range(F):
+            if visited[start]:
+                continue
+
+            lb = int(labels[start])
+            q = deque([start])
+            visited[start] = 1
+            comp = [start]
+
+            while q:
+                u = q.popleft()
+                for v in neigh[u]:
+                    if visited[v]:
+                        continue
+                    if int(labels[v]) != lb:
+                        continue
+                    visited[v] = 1
+                    q.append(v)
+                    comp.append(v)
+
+            if len(comp) >= int(min_size):
+                continue
+
+            boundary_labels = []
+            comp_set = set(comp)
+            for u in comp:
+                for v in neigh[u]:
+                    if v in comp_set:
+                        continue
+                    boundary_labels.append(int(labels[v]))
+
+            if not boundary_labels:
+                continue
+
+            uvals, cnts = np.unique(np.array(boundary_labels, dtype=np.int64), return_counts=True)
+            new_lb = int(uvals[np.argmax(cnts)])
+
+            if new_lb != lb:
+                labels[comp] = new_lb
+                changed += len(comp)
+
+        if changed == 0:
+            break
+
+    return labels
+
+
+# ============================================================
+# Point mode: point pred/conf -> face pred/conf
 # ============================================================
 def _find_point_xyz_in_batch(batch: Any, n_pred: int) -> Optional[np.ndarray]:
     if not isinstance(batch, dict):
@@ -538,16 +684,15 @@ def _find_point_xyz_in_batch(batch: Any, n_pred: int) -> Optional[np.ndarray]:
     return None
 
 
-def point_pred_to_face_labels(pred_point: np.ndarray, mesh: trimesh.Trimesh, batch: Any) -> Tuple[np.ndarray, Dict[str, Any]]:
-    pred_point = pred_point.reshape(-1).astype(np.int64)
-    n_pred = len(pred_point)
+def point_array_to_face_array(arr_point: np.ndarray, mesh: trimesh.Trimesh, batch: Any) -> Tuple[np.ndarray, Dict[str, Any]]:
+    arr_point = np.asarray(arr_point).reshape(-1)
+    n_pred = len(arr_point)
 
     pts = _find_point_xyz_in_batch(batch, n_pred=n_pred)
     if pts is None:
         raise RuntimeError("Point mode: cannot find point xyz in batch to map point->face.")
 
     fc = np.asarray(mesh.triangles_center, dtype=np.float64)
-
     P = _standardize(pts)
     C = _standardize(fc)
 
@@ -558,24 +703,26 @@ def point_pred_to_face_labels(pred_point: np.ndarray, mesh: trimesh.Trimesh, bat
     _, nn = tree.query(C, k=1, workers=-1)
     nn = nn.astype(np.int64)
 
-    face_labels = pred_point[nn]
+    face_arr = arr_point[nn]
     info = {"method": "point_to_face_nn", "n_points": int(n_pred), "faces": int(len(fc))}
-    return face_labels.astype(np.int64), info
+    return face_arr, info
 
 
 # ============================================================
-# Logits to labels (support (B,N,C) or (B,C,N))
+# Logits -> labels + confidence
 # ============================================================
-def logits_to_labels(out: torch.Tensor) -> np.ndarray:
+def logits_to_labels_and_conf(out: torch.Tensor) -> Tuple[np.ndarray, np.ndarray]:
     if out.ndim != 3:
         raise ValueError(f"model output must be 3D, got {tuple(out.shape)}")
-
-    # heuristic: if second dim looks like C (<=64) and third looks like N (>>64)
     if out.shape[1] <= 64 and out.shape[2] > 64:
-        out = out.permute(0, 2, 1).contiguous()  # (B,N,C)
+        out = out.permute(0, 2, 1).contiguous()
 
-    y = torch.argmax(out, dim=-1)  # (B,N)
-    return y[0].detach().cpu().numpy().astype(np.int64)
+    prob = torch.softmax(out, dim=-1)
+    conf, y = torch.max(prob, dim=-1)
+    return (
+        y[0].detach().cpu().numpy().astype(np.int64),
+        conf[0].detach().cpu().numpy().astype(np.float32),
+    )
 
 
 # ============================================================
@@ -632,15 +779,9 @@ def export_gt_files(in_ply: Path, out_dir: Path, arch: str):
     uniq = np.unique(face_rgb.reshape(-1, 3), axis=0)
     uniq_list = [tuple(map(int, u)) for u in uniq.tolist()]
 
-    # build palette list (16 teeth + gingiva)
-    if arch == "upper":
-        pal = [cmap.label_to_rgb("upper", i, num_classes=17) for i in range(16)] + [
-            cmap.label_to_rgb("upper", GINGIVA_LABEL, num_classes=17)
-        ]
-    else:
-        pal = [cmap.label_to_rgb("lower", i, num_classes=17) for i in range(16)] + [
-            cmap.label_to_rgb("lower", GINGIVA_LABEL, num_classes=17)
-        ]
+    pal = [cmap.label_to_rgb(arch, i, num_classes=17) for i in range(16)] + [
+        cmap.label_to_rgb(arch, GINGIVA_LABEL, num_classes=17)
+    ]
     pal = np.array(pal, dtype=np.int16)
 
     unknowns = []
@@ -655,7 +796,7 @@ def export_gt_files(in_ply: Path, out_dir: Path, arch: str):
     fixed = face_rgb
     if unknowns:
         c = face_rgb.astype(np.int16)
-        dist = np.max(np.abs(c[:, None, :] - pal[None, :, :]), axis=2)  # (F,17)
+        dist = np.max(np.abs(c[:, None, :] - pal[None, :, :]), axis=2)
         j = np.argmin(dist, axis=1)
         fixed = pal[j].astype(np.uint8)
 
@@ -663,38 +804,161 @@ def export_gt_files(in_ply: Path, out_dir: Path, arch: str):
 
 
 # ============================================================
-# Forward helpers (robust for point models)
+# Forward helpers (robust for point models: PointNet++ / PointCNN)
 # ============================================================
+def _move_to_device(v: Any, device: str):
+    if torch.is_tensor(v):
+        return v.to(device, non_blocking=True)
+    return v
+
+
+def _ensure_bnc(x: torch.Tensor) -> torch.Tensor:
+    """
+    Ensure tensor is shaped (B, N, C) when possible.
+
+    Heuristic:
+      - if already looks like (B,N,C) with small C, keep it
+      - if looks like (B,C,N) with small C and large N, transpose
+    """
+    if not torch.is_tensor(x) or x.ndim != 3:
+        return x
+
+    b, a, c = x.shape
+
+    # already (B,N,C)
+    if c <= 32:
+        return x
+
+    # likely (B,C,N)
+    if a <= 32 and c > 32:
+        return x.permute(0, 2, 1).contiguous()
+
+    return x
+
+
+def _build_point_batch_for_model(batch: Any, device: str) -> Dict[str, Any]:
+    """
+    Build a dict for point-based models robustly.
+
+    Supported common keys:
+      - pos / xyz / points / coords : point positions, shape (B,N,3)
+      - x                           : full point feature tensor, e.g. (B,N,6) for xyz+normals
+      - features / feats            : alternative full feature tensor
+
+    IMPORTANT:
+      For PointNet++ / PointCNN in this project, keep x as the FULL feature tensor
+      (e.g. xyz+normals => 6 channels), not just the channels after xyz.
+    """
+    if not isinstance(batch, dict):
+        raise TypeError(f"Point mode expects batch as dict, got {type(batch)}")
+
+    batch_dev = {k: _move_to_device(v, device) for k, v in batch.items()}
+    out: Dict[str, Any] = {}
+
+    # -------------------------
+    # 1) locate pos
+    # -------------------------
+    pos = None
+    for key in ("pos", "xyz", "points", "coords"):
+        if key in batch_dev and torch.is_tensor(batch_dev[key]):
+            pos = _ensure_bnc(batch_dev[key])
+            break
+
+    # -------------------------
+    # 2) locate full feature tensor
+    # -------------------------
+    x_full = None
+
+    if "features" in batch_dev and torch.is_tensor(batch_dev["features"]):
+        x_full = _ensure_bnc(batch_dev["features"])
+    elif "feats" in batch_dev and torch.is_tensor(batch_dev["feats"]):
+        x_full = _ensure_bnc(batch_dev["feats"])
+    elif "x" in batch_dev and torch.is_tensor(batch_dev["x"]):
+        x_full = _ensure_bnc(batch_dev["x"])
+
+    # If no explicit pos, derive it from first 3 channels of x_full
+    if pos is None:
+        if x_full is None:
+            raise KeyError('Point batch has neither "pos" nor usable full feature tensor ("x"/"features"/"feats").')
+        if x_full.ndim != 3 or x_full.shape[-1] < 3:
+            raise RuntimeError(
+                f'Cannot derive "pos" from full feature tensor with shape {tuple(x_full.shape)}'
+            )
+        pos = x_full[..., :3]
+
+    out["pos"] = pos
+
+    # Keep full point feature tensor if available
+    if x_full is not None:
+        out["x"] = x_full
+
+    # Pass-through keys เผื่อบาง model / downstream ใช้
+    for k in ("path", "mask", "valid_mask", "y", "label", "labels"):
+        if k in batch_dev and k not in out:
+            out[k] = batch_dev[k]
+
+    return out
+
+
 def forward_point_model(model: torch.nn.Module, batch: Any) -> torch.Tensor:
     """
-    Try common PointNet++ forward signatures.
-    Default: model(x)
-    Fallback: model(x.permute(0,2,1))
+    Robust forward for point-based models such as PointNet++ and PointCNN.
+
+    Priority:
+      1) model({"pos": ..., "x": full_features})
+      2) model(original_batch_dict)
+      3) model(full_features)
+      4) model(full_features permuted)
+      5) model(pos, full_features)
+      6) model(pos) ONLY if full_features do not exist
     """
-    x = batch["x"] if isinstance(batch, dict) else batch
-    if not torch.is_tensor(x):
-        raise TypeError("Point mode expects batch['x'] as torch.Tensor")
+    last_err = None
 
-    x = x.to(DEVICE, non_blocking=True)
+    point_batch = _build_point_batch_for_model(batch, DEVICE)
 
-    # Try model(x)
-    try:
-        return model(x)
-    except Exception:
-        pass
+    # Optional debug
+    # print("[DEBUG] point_batch keys:", list(point_batch.keys()))
+    # print("[DEBUG] pos shape:", tuple(point_batch["pos"].shape))
+    # if "x" in point_batch:
+    #     print("[DEBUG] x shape:", tuple(point_batch["x"].shape))
 
-    # Try swapping (B,N,C) <-> (B,C,N)
-    if x.ndim == 3:
+    tries = []
+
+    # 1) preferred: dict with pos + x
+    tries.append(lambda: model(point_batch))
+
+    # 2) original batch dict
+    if isinstance(batch, dict):
+        batch_dev = {k: _move_to_device(v, DEVICE) for k, v in batch.items()}
+        tries.append(lambda: model(batch_dev))
+
+    # 3) full feature tensor
+    if "x" in point_batch and torch.is_tensor(point_batch["x"]):
+        x = point_batch["x"]
+        tries.append(lambda: model(x))
+
+        if x.ndim == 3:
+            tries.append(lambda: model(x.permute(0, 2, 1).contiguous()))
+
+        # 4) positional style
+        tries.append(lambda: model(point_batch["pos"], x))
+
+    # 5) pos-only fallback ONLY when there is no full feature tensor
+    if "x" not in point_batch:
+        tries.append(lambda: model(point_batch["pos"]))
+
+    for fn in tries:
         try:
-            return model(x.permute(0, 2, 1).contiguous())
-        except Exception:
-            pass
+            out = fn()
+            if torch.is_tensor(out):
+                return out
+            raise TypeError(f"Model forward returned non-tensor type: {type(out)}")
+        except Exception as e:
+            last_err = e
 
-    # Last resort: if model accepts dict
-    try:
-        return model({"x": x})
-    except Exception as e:
-        raise RuntimeError(f"Point model forward failed for all attempts. Last error: {repr(e)}") from e
+    raise RuntimeError(
+        f"Point model forward failed for all attempts. Last error: {repr(last_err)}"
+    ) from last_err
 
 
 # ============================================================
@@ -714,7 +978,7 @@ def main():
     mode_run = str((cfg.get("data", {}) or {}).get("mode", MODE)).lower()
     if MODE != "auto":
         mode_run = str(MODE).lower()
-    print(f"[MODE]    {mode_run}")
+    print(f"[MODE]     {mode_run}")
 
     model, model_spec = build_model_from_cfg(cfg)
     print(f"[MODEL]    {model_spec}")
@@ -723,7 +987,7 @@ def main():
     cfg_full = copy.deepcopy(cfg)
     cfg_full.setdefault("data", {})
     cfg_full["data"]["unknown_policy"] = str(UNKNOWN_POLICY)
-    cfg_full["data"]["mode"] = mode_run  # ✅ do NOT hardcode face
+    cfg_full["data"]["mode"] = mode_run
 
     ensure_dir(VIS_OUT)
 
@@ -805,23 +1069,73 @@ def main():
                 if DEBUG_PRINT_FIRST_OUT and i == 0:
                     print(f"[DEBUG] model out tensor: {tuple(out.shape)} {out.dtype}")
 
-                pred = logits_to_labels(out)
+                pred, conf = logits_to_labels_and_conf(out)
 
+                # Map/align to per-face arrays
                 if mode_run == "point":
-                    pred_aligned, alst = point_pred_to_face_labels(pred, mesh, batch)
+                    pred_face, alst = point_array_to_face_array(pred, mesh, batch)
+                    conf_face, _ = point_array_to_face_array(conf, mesh, batch)
                 else:
-                    pred_aligned, alst = align_pred_to_mesh(pred, mesh, batch)
+                    pred_face, alst = align_array_to_mesh(pred, mesh, batch)
+                    conf_face, _ = align_array_to_mesh(conf, mesh, batch)
 
-                if SMOOTH_ITERS > 0:
-                    centers = np.asarray(mesh.triangles_center, dtype=np.float64)
-                    pred_sm = smooth_labels_knn(centers, pred_aligned, k=16, iters=int(SMOOTH_ITERS))
+                pred_face = np.asarray(pred_face, dtype=np.int64).reshape(-1)
+                conf_face = np.asarray(conf_face, dtype=np.float32).reshape(-1)
+
+                # 1) Low-confidence policy (C)
+                if CONF_THRESH and float(CONF_THRESH) > 0 and CONF_APPLY_BEFORE_CLEAN:
+                    pol = str(CONF_LOWCONF_POLICY).lower()
+                    if pol == "neighbor":
+                        pred_face = fill_lowconf_by_neighbors(
+                            mesh, labels=pred_face, conf=conf_face,
+                            thresh=float(CONF_THRESH), iters=int(CONF_NEIGHBOR_ITERS)
+                        )
+                    elif pol == "gingiva":
+                        low = conf_face < float(CONF_THRESH)
+                        if np.any(low):
+                            pred_face = pred_face.copy()
+                            pred_face[low] = int(GINGIVA_LABEL)
+
+                # 2) Component cleanup (remove tiny islands)
+                if CLEAN_SMALL_COMPONENTS:
+                    pred_face = cleanup_small_components(
+                        mesh, labels=pred_face, min_size=int(MIN_COMP_SIZE), iters=int(CLEAN_ITERS)
+                    )
+
+                # 3) Smoothing (optional)
+                if SMOOTH_ITERS and int(SMOOTH_ITERS) > 0:
+                    if str(SMOOTH_METHOD).lower() == "knn":
+                        centers = np.asarray(mesh.triangles_center, dtype=np.float64)
+                        pred_sm = smooth_labels_knn(
+                            centers, pred_face, k=int(SMOOTH_KNN_K), iters=int(SMOOTH_ITERS)
+                        )
+                    else:
+                        pred_sm = smooth_labels_adjacency(mesh, pred_face, iters=int(SMOOTH_ITERS))
                 else:
-                    pred_sm = pred_aligned
+                    pred_sm = pred_face
+
+                # optional: apply conf policy after smoothing if configured
+                if CONF_THRESH and float(CONF_THRESH) > 0 and (not CONF_APPLY_BEFORE_SMOOTH):
+                    pol = str(CONF_LOWCONF_POLICY).lower()
+                    if pol == "neighbor":
+                        pred_sm = fill_lowconf_by_neighbors(
+                            mesh, labels=pred_sm, conf=conf_face,
+                            thresh=float(CONF_THRESH), iters=int(CONF_NEIGHBOR_ITERS)
+                        )
+                    elif pol == "gingiva":
+                        low = conf_face < float(CONF_THRESH)
+                        if np.any(low):
+                            pred_sm = pred_sm.copy()
+                            pred_sm[low] = int(GINGIVA_LABEL)
 
                 u, c = np.unique(pred_sm, return_counts=True)
                 hist = sorted([(int(a), int(b)) for a, b in zip(u.tolist(), c.tolist())], key=lambda x: -x[1])
                 if i == 0:
-                    print(f"[DEBUG] align={alst} | hist_top={hist[:5]}")
+                    print(
+                        f"[DEBUG] align={alst} | hist_top={hist[:5]} | "
+                        f"conf={CONF_LOWCONF_POLICY}:{CONF_THRESH} it={CONF_NEIGHBOR_ITERS} "
+                        f"clean=min{MIN_COMP_SIZE}x{CLEAN_ITERS} smooth={SMOOTH_METHOD}:{SMOOTH_ITERS}"
+                    )
 
                 case_id = case_id_from_path(in_ply)
                 case_dir = (out_root / f"{case_id}") if CASE_SUBFOLDERS else out_root
@@ -830,11 +1144,8 @@ def main():
                 if EXPORT_GT:
                     export_gt_files(in_ply, case_dir, arch)
 
-                rgb_pred = labels_to_face_rgb(
-                    arch,
-                    pred_sm,
-                    num_classes=int((cfg.get("model", {}) or {}).get("kwargs", {}).get("num_classes", 17)),
-                )
+                num_classes = int((cfg.get("model", {}) or {}).get("kwargs", {}).get("num_classes", 17))
+                rgb_pred = labels_to_face_rgb(arch, pred_sm, num_classes=num_classes)
                 out_pred_ply = case_dir / f"{in_ply.stem}_pred_{CKPT_TAG}.ply"
                 export_face_color_ply(mesh, out_pred_ply, rgb_pred)
 
@@ -850,7 +1161,15 @@ def main():
                         "ckpt": str(ckpt_path),
                         "align": alst,
                         "hist": hist[:50],
+                        "conf_thresh": float(CONF_THRESH),
+                        "conf_policy": str(CONF_LOWCONF_POLICY),
+                        "conf_neighbor_iters": int(CONF_NEIGHBOR_ITERS),
+                        "clean_small_components": bool(CLEAN_SMALL_COMPONENTS),
+                        "min_comp_size": int(MIN_COMP_SIZE),
+                        "clean_iters": int(CLEAN_ITERS),
                         "smooth_iters": int(SMOOTH_ITERS),
+                        "smooth_method": str(SMOOTH_METHOD),
+                        "smooth_knn_k": int(SMOOTH_KNN_K),
                     },
                 )
 

@@ -3,15 +3,19 @@ from __future__ import annotations
 
 from typing import List, Dict, Any
 
-from src.dataloader.points_base import PointDataset
-from src.dataloader.faces_base import FaceDataset
-from src.dataloader.graph_base import GraphDataset
+from src.dataloader import build_dataset
 
 
 class PlySegDataLoader:
     """
     Backward-compatible wrapper that builds a Dataset instance (point/face/graph)
     from a minimal set of args, while internally using the unified from_config() API.
+
+    ✅ Updated:
+      - ใช้ build_dataset() เพื่อรองรับ TwoStream24FaceDataset + preset injection
+      - ส่ง graph params ได้ครบขึ้น (adjacency_mode, add_self_loops, nonmanifold_policy, cache, ...)
+      - รองรับชื่อกลาง: face_feature="twostream24_topo" (paper-like opt-in)
+      - ยังรองรับ face_feature="paper24" (alias เก่า) แบบไม่เปลี่ยน behavior
     """
 
     def __init__(
@@ -44,6 +48,18 @@ class PlySegDataLoader:
         self.mode = mode
         self.arch = arch
 
+        # infer in_channels if user forgot (safe)
+        face_feature = str(kwargs.get("face_feature", "center_normal")).lower().strip()
+        point_feature = str(kwargs.get("point_feature", "xyz_n")).lower().strip()
+        if mode in ("face", "graph") and face_feature in ("twostream24", "twostream24_topo", "paper24"):
+            in_channels = 24
+        elif mode in ("point",) and "xyz_n" in point_feature:
+            in_channels = 6
+        elif mode in ("point",):
+            in_channels = 3
+        else:
+            in_channels = 6
+
         # Build a cfg dict that matches your Dataset.from_config() expectations
         full_cfg: Dict[str, Any] = {
             "data": {
@@ -65,11 +81,27 @@ class PlySegDataLoader:
                 "point_feature": kwargs.get("point_feature", "xyz_n"),
                 "face_feature": kwargs.get("face_feature", "center_normal"),
 
+                # two-stream extras
+                "twostream_coord_mode": kwargs.get("twostream_coord_mode", None),
+
                 # mesh/graph extras
                 "return_faces": bool(kwargs.get("return_faces", True)),
                 "return_nbr": bool(kwargs.get("return_nbr", True)),
                 "k_neighbors": int(kwargs.get("k_neighbors", 3)),
+
+                # graph configs (forward more knobs)
                 "graph_type": kwargs.get("graph_type", "face_adj"),
+                "adjacency_mode": kwargs.get("adjacency_mode", None),
+                "nonmanifold_policy": kwargs.get("nonmanifold_policy", None),
+                "add_self_loops": kwargs.get("add_self_loops", None),
+                "graph_k": kwargs.get("graph_k", None),
+                "knn_undirected": kwargs.get("knn_undirected", None),
+
+                "cache_edge_index": kwargs.get("cache_edge_index", None),
+                "cache_dir": kwargs.get("cache_dir", None),
+                "max_faces_per_edge": kwargs.get("max_faces_per_edge", None),
+                "max_faces_per_vertex": kwargs.get("max_faces_per_vertex", None),
+
                 "return_edge_index": bool(kwargs.get("return_edge_index", True)),
             },
             "model": {
@@ -80,12 +112,11 @@ class PlySegDataLoader:
             },
         }
 
-        if mode == "point":
-            self.ds = PointDataset.from_config(files, full_cfg, arch=arch)
-        elif mode == "face":
-            self.ds = FaceDataset.from_config(files, full_cfg, arch=arch)
-        else:  # graph
-            self.ds = GraphDataset.from_config(files, full_cfg, arch=arch)
+        # drop None so dataset defaults remain intact unless caller overrides
+        full_cfg["data"] = {k: v for k, v in full_cfg["data"].items() if v is not None}
+
+        # ✅ Use factory (handles TwoStream24FaceDataset + preset injection)
+        self.ds = build_dataset(files, full_cfg, arch=arch)
 
     @property
     def dataset(self):
