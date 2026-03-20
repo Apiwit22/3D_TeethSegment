@@ -1,197 +1,297 @@
-# models/fast_tgcn.py
 from __future__ import annotations
-from typing import Dict, Any, List
+
+from typing import Dict, Any, List, Optional, Sequence
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
 
-def _ensure_edge_index(edge_index: torch.Tensor, n: int) -> torch.Tensor:
-    if edge_index.numel() == 0:
-        return edge_index
-    src, dst = edge_index[0], edge_index[1]
-    m = (src >= 0) & (src < n) & (dst >= 0) & (dst < n)
-    if m.all():
-        return edge_index
-    return edge_index[:, m]
-
-
-def _mean_aggregate(x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
+def _to_bool_mask(valid_face: Optional[torch.Tensor], x: torch.Tensor) -> torch.Tensor:
     """
-    Implements a sparse (D^-1 A) aggregation (mean of neighbors).
-    x: (N,C)
-    edge_index: (2,E) directed src->dst
+    Return bool mask shape (B, F)
     """
-    N, C = x.shape
-    if edge_index.numel() == 0:
-        return torch.zeros((N, C), device=x.device, dtype=x.dtype)
-
-    src, dst = edge_index[0], edge_index[1]
-    msg = x[src]  # (E,C)
-
-    out = torch.zeros((N, C), device=x.device, dtype=x.dtype)
-    out.index_add_(0, dst, msg)
-
-    deg = torch.zeros((N,), device=x.device, dtype=x.dtype)
-    ones = torch.ones((dst.numel(),), device=x.device, dtype=x.dtype)
-    deg.index_add_(0, dst, ones)
-
-    return out / deg.clamp_min(1.0).unsqueeze(1)
+    if valid_face is None:
+        return torch.ones(x.shape[:2], dtype=torch.bool, device=x.device)
+    return valid_face.bool()
 
 
-class Conv1DBlock(nn.Module):
+def _split_streams(
+    batch: Dict[str, Any],
+    coord_channels: int = 12,
+    normal_channels: int = 12,
+) -> tuple[torch.Tensor, torch.Tensor]:
     """
-    'Conv1D' in the paper can be implemented as per-node Linear (1x1 conv).
+    Prefer x_c / x_n if present.
+    Fallback to split x[..., :12] and x[..., 12:24].
     """
-    def __init__(self, in_ch: int, out_ch: int, dropout: float = 0.0, use_bn: bool = True):
+    x_c = batch.get("x_c", None)
+    x_n = batch.get("x_n", None)
+
+    if x_c is not None and x_n is not None:
+        return x_c.float(), x_n.float()
+
+    x = batch["x"].float()
+    need = coord_channels + normal_channels
+    if x.shape[-1] < need:
+        raise ValueError(
+            f"FastTGCN expects at least {need} channels, got x.shape={tuple(x.shape)}"
+        )
+    return x[..., :coord_channels], x[..., coord_channels:coord_channels + normal_channels]
+
+
+def _mean_aggregate_from_edge_index(
+    x_i: torch.Tensor,       # (F, C)
+    edge_index_i: torch.Tensor,  # (2, E)
+    f_used: int,
+) -> torch.Tensor:
+    """
+    Mean neighbor aggregation for one sample.
+    dst receives messages from src.
+    """
+    F_all, C = x_i.shape
+    f_used = int(max(0, min(f_used, F_all)))
+
+    if f_used == 0:
+        return torch.zeros_like(x_i)
+
+    out = torch.zeros_like(x_i)
+    deg = torch.zeros((F_all, 1), dtype=x_i.dtype, device=x_i.device)
+
+    if edge_index_i.numel() == 0:
+        return out
+
+    src = edge_index_i[0].long()
+    dst = edge_index_i[1].long()
+
+    keep = (src >= 0) & (src < f_used) & (dst >= 0) & (dst < f_used)
+    src = src[keep]
+    dst = dst[keep]
+
+    if src.numel() == 0:
+        return out
+
+    out.index_add_(0, dst, x_i[src])
+    deg.index_add_(0, dst, torch.ones((dst.numel(), 1), dtype=x_i.dtype, device=x_i.device))
+    out = out / deg.clamp_min_(1.0)
+    return out
+
+
+def _mean_aggregate_from_nbr(
+    x_i: torch.Tensor,   # (F, C)
+    nbr_i: torch.Tensor, # (F, K)
+    f_used: int,
+) -> torch.Tensor:
+    """
+    Fallback aggregation using neighbor indices from face-mode loader.
+    """
+    F_all, C = x_i.shape
+    f_used = int(max(0, min(f_used, F_all)))
+
+    out = torch.zeros_like(x_i)
+    if f_used == 0:
+        return out
+
+    nbr = nbr_i[:f_used].long().clone()
+    nbr = nbr.clamp(0, max(f_used - 1, 0))
+    neigh = x_i[nbr]                 # (F_used, K, C)
+    out[:f_used] = neigh.mean(dim=1)
+    return out
+
+
+class MLP(nn.Module):
+    def __init__(self, in_ch: int, out_ch: int, dropout: float = 0.0):
         super().__init__()
-        self.fc = nn.Linear(in_ch, out_ch)
-        self.bn = nn.BatchNorm1d(out_ch) if use_bn else nn.Identity()
-        self.drop = nn.Dropout(dropout)
+        self.net = nn.Sequential(
+            nn.Linear(in_ch, out_ch),
+            nn.BatchNorm1d(out_ch),
+            nn.ReLU(inplace=True),
+            nn.Dropout(dropout),
+        )
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        x = self.fc(x)
-        x = self.bn(x)
-        x = F.relu(x, inplace=True)
-        x = self.drop(x)
-        return x
+        # x: (B, F, C)
+        B, F, C = x.shape
+        y = self.net(x.reshape(B * F, C))
+        return y.reshape(B, F, -1)
 
 
-class GCB(nn.Module):
+class GraphConvMean(nn.Module):
     """
-    Graph Convolution Block (paper-style):
-      GCB(Fn) = sigma( A · Conv1D(Fn) · W )
-    We implement it sparsely:
-      h = Conv1D(Fn)
-      h = mean(A @ h)   (degree-normalized for stability)
-      h = Linear(h)     (~ multiply by W)
-      sigma = ReLU (+ BN, Dropout)
+    Simple graph conv:
+      h' = MLP([h, mean_neigh(h)])
+    Works with:
+      - edge_index: list[(2,E)] from collate_graph
+      - nbr: (B,F,K) from collate_face
     """
-    def __init__(self, dim: int, dropout: float = 0.0, use_bn: bool = True):
+    def __init__(self, in_ch: int, out_ch: int, dropout: float = 0.0):
         super().__init__()
-        self.pre = Conv1DBlock(dim, dim, dropout=0.0, use_bn=use_bn)  # Conv1D(Fn)
-        self.lin_w = nn.Linear(dim, dim)                             # ·W
-        self.bn = nn.BatchNorm1d(dim) if use_bn else nn.Identity()
-        self.drop = nn.Dropout(dropout)
+        self.mlp = MLP(in_ch * 2, out_ch, dropout=dropout)
 
-    def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
-        h = self.pre(x)                        # (N,dim)
-        h = _mean_aggregate(h, edge_index)     # A @ h (normalized)
-        h = self.lin_w(h)
-        h = self.bn(h)
-        h = F.relu(h, inplace=True)
-        h = self.drop(h)
-        return h
+    def forward(
+        self,
+        x: torch.Tensor,                       # (B,F,C)
+        *,
+        edge_index: Optional[List[torch.Tensor]] = None,
+        nbr: Optional[torch.Tensor] = None,
+        f_used: Optional[Sequence[int]] = None,
+    ) -> torch.Tensor:
+        B, F, C = x.shape
+        if f_used is None:
+            f_used = [F] * B
+
+        aggr_list: List[torch.Tensor] = []
+        for i in range(B):
+            xi = x[i]
+            fi = int(f_used[i])
+
+            if edge_index is not None:
+                agg_i = _mean_aggregate_from_edge_index(xi, edge_index[i].to(x.device), fi)
+            elif nbr is not None:
+                agg_i = _mean_aggregate_from_nbr(xi, nbr[i].to(x.device), fi)
+            else:
+                raise ValueError("FastTGCN needs either edge_index (graph mode) or nbr (face mode).")
+
+            aggr_list.append(agg_i)
+
+        aggr = torch.stack(aggr_list, dim=0)  # (B,F,C)
+        return self.mlp(torch.cat([x, aggr], dim=-1))
+
+
+class FastTGCNBlock(nn.Module):
+    def __init__(self, in_ch: int, out_ch: int, dropout: float = 0.0):
+        super().__init__()
+        self.conv1 = GraphConvMean(in_ch, out_ch, dropout=dropout)
+        self.conv2 = GraphConvMean(out_ch, out_ch, dropout=dropout)
+
+        if in_ch != out_ch:
+            self.proj = nn.Linear(in_ch, out_ch)
+        else:
+            self.proj = nn.Identity()
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        *,
+        edge_index: Optional[List[torch.Tensor]],
+        nbr: Optional[torch.Tensor],
+        f_used: Sequence[int],
+    ) -> torch.Tensor:
+        res = self.proj(x)
+        x = self.conv1(x, edge_index=edge_index, nbr=nbr, f_used=f_used)
+        x = self.conv2(x, edge_index=edge_index, nbr=nbr, f_used=f_used)
+        return x + res
 
 
 class FastTGCN(nn.Module):
     """
-    Paper-aligned Fast-TGCN:
-      - Input: 24D per face-cell (x_c 12D, x_n 12D)
-      - Normal branch: GCB stacks guided by adjacency (share-vertex)
-      - Coord branch: only Conv1D (no graph conv)
-      - Union: concat then FC classifier
+    Practical Fast-TGCN reimplementation for your dataloader.
 
-    Batch expected:
-      - x_c: (B,F,12) or x: (B,F,24)
-      - x_n: (B,F,12)
-      - edge_index: list[(2,E_i)] length B (built from F_used)
-      - F_used: list[int] or tensor/int
+    Expected batch keys:
+      - x or (x_c, x_n)
+      - valid_face or mask
+      - F_used
+      - edge_index (graph mode, preferred) OR nbr (face mode fallback)
+
     Output:
-      - logits: (B,F,num_classes)
+      - logits: (B, F, num_classes)
     """
     def __init__(
         self,
+        in_channels: int = 24,
+        coord_channels: int = 12,
+        normal_channels: int = 12,
         num_classes: int = 17,
-        hidden_dim: int = 128,
-        num_blocks: int = 6,
-        dropout: float = 0.2,
-        use_bn: bool = True,
+        stem_channels: int = 64,
+        block_channels: Sequence[int] = (64, 128, 128, 256),
+        classifier_hidden: int = 128,
+        dropout: float = 0.1,
+        use_global_context: bool = True,
     ):
         super().__init__()
+
+        if in_channels < coord_channels + normal_channels:
+            raise ValueError(
+                f"in_channels={in_channels} is smaller than "
+                f"coord+normal={coord_channels + normal_channels}"
+            )
+
+        self.in_channels = int(in_channels)
+        self.coord_channels = int(coord_channels)
+        self.normal_channels = int(normal_channels)
         self.num_classes = int(num_classes)
-        self.hidden_dim = int(hidden_dim)
-        self.num_blocks = int(num_blocks)
+        self.use_global_context = bool(use_global_context)
 
-        # branch dims (keep them equal for concat)
-        h = max(16, self.hidden_dim // 2)
+        self.coord_stem = MLP(coord_channels, stem_channels, dropout=dropout)
+        self.normal_stem = MLP(normal_channels, stem_channels, dropout=dropout)
+        self.fuse = MLP(stem_channels * 2, stem_channels, dropout=dropout)
 
-        # Coord branch: F'_c = Conv1D(F_c)
-        self.coord_conv = Conv1DBlock(12, h, dropout=dropout, use_bn=use_bn)
+        blocks = []
+        prev = stem_channels
+        for ch in block_channels:
+            blocks.append(FastTGCNBlock(prev, int(ch), dropout=dropout))
+            prev = int(ch)
+        self.blocks = nn.ModuleList(blocks)
 
-        # Normal branch:
-        # start with Conv1D to h, then GCB stacks on graph
-        self.norm_in = Conv1DBlock(12, h, dropout=dropout, use_bn=use_bn)
-        self.gcbs = nn.ModuleList([GCB(h, dropout=dropout, use_bn=use_bn) for _ in range(self.num_blocks)])
-
-        # Head on concatenated feature (h_n ⊕ h_c) -> num_classes
+        head_in = prev * 2 if self.use_global_context else prev
         self.head = nn.Sequential(
-            nn.Linear(h * 2, self.hidden_dim),
-            nn.BatchNorm1d(self.hidden_dim) if use_bn else nn.Identity(),
-            nn.ReLU(inplace=True),
-            nn.Dropout(dropout),
-            nn.Linear(self.hidden_dim, self.num_classes),
+            MLP(head_in, classifier_hidden, dropout=dropout),
+            nn.Linear(classifier_hidden, num_classes),
         )
 
-    def forward(self, batch: Dict[str, Any]) -> Dict[str, torch.Tensor]:
-        x = batch.get("x", None)
-        x_c = batch.get("x_c", None)
-        x_n = batch.get("x_n", None)
+    def _masked_global_max(self, x: torch.Tensor, valid: torch.Tensor) -> torch.Tensor:
+        # x: (B,F,C), valid: (B,F)
+        B, F, C = x.shape
+        neg = torch.finfo(x.dtype).min
+        x_masked = x.masked_fill(~valid.unsqueeze(-1), neg)
+        g = x_masked.max(dim=1).values
+        # for safety if a sample is entirely invalid
+        bad = ~valid.any(dim=1)
+        if bad.any():
+            g[bad] = 0
+        return g
 
-        if x_c is None or x_n is None:
-            if x is None:
-                raise KeyError("FastTGCN requires batch['x'] (24D) or batch['x_c'] & batch['x_n'] (12D each).")
-            if x.shape[-1] != 24:
-                raise ValueError(f"Expected x last-dim=24, got {tuple(x.shape)}")
-            x_c = x[..., :12]
-            x_n = x[..., 12:]
+    def forward(self, batch: Dict[str, Any]) -> torch.Tensor:
+        x_c, x_n = _split_streams(
+            batch,
+            coord_channels=self.coord_channels,
+            normal_channels=self.normal_channels,
+        )
 
-        edge_list = batch.get("edge_index", None)
-        if edge_list is None or not isinstance(edge_list, list):
-            raise KeyError("FastTGCN requires batch['edge_index'] as list of tensors per sample.")
+        valid_face = batch.get("valid_face", None)
+        if valid_face is None:
+            valid_face = batch.get("mask", None)
+        valid = _to_bool_mask(valid_face, x_c)  # (B,F)
 
-        B, F = x_c.shape[0], x_c.shape[1]
-
-        F_used_any = batch.get("F_used", None)
-        if isinstance(F_used_any, list):
-            F_used_list = [int(v) for v in F_used_any]
-        elif torch.is_tensor(F_used_any) and F_used_any.ndim == 1:
-            F_used_list = [int(v.item()) for v in F_used_any]
-        elif isinstance(F_used_any, int):
-            F_used_list = [int(F_used_any)] * B
+        f_used = batch.get("F_used", None)
+        if f_used is None:
+            f_used = batch.get("F_used_t", None)
+        if torch.is_tensor(f_used):
+            f_used = [int(v) for v in f_used.detach().cpu().tolist()]
+        elif f_used is None:
+            f_used = [x_c.shape[1]] * x_c.shape[0]
         else:
-            F_used_list = [F] * B
+            f_used = [int(v) for v in f_used]
 
-        logits_all: List[torch.Tensor] = []
+        edge_index = batch.get("edge_index", None)
+        nbr = batch.get("nbr", None)
 
-        for i in range(B):
-            n = max(1, min(int(F_used_list[i]), F))
+        h_c = self.coord_stem(x_c)
+        h_n = self.normal_stem(x_n)
+        x = self.fuse(torch.cat([h_c, h_n], dim=-1))
 
-            xi_c = x_c[i, :n]  # (n,12)
-            xi_n = x_n[i, :n]  # (n,12)
+        for block in self.blocks:
+            x = block(x, edge_index=edge_index, nbr=nbr, f_used=f_used)
 
-            ei = edge_list[i]
-            if not torch.is_tensor(ei):
-                raise ValueError("edge_index entries must be torch.Tensor")
-            ei = _ensure_edge_index(ei.long(), n)
+        if self.use_global_context:
+            g = self._masked_global_max(x, valid)           # (B,C)
+            g = g.unsqueeze(1).expand(-1, x.shape[1], -1)   # (B,F,C)
+            x = torch.cat([x, g], dim=-1)
 
-            # Coord branch (no graph)
-            hc = self.coord_conv(xi_c)  # (n,h)
+        B, F, C = x.shape
+        logits = self.head[0](x)
+        logits = self.head[1](logits.reshape(B * F, -1)).reshape(B, F, self.num_classes)
 
-            # Normal branch (graph)
-            hn = self.norm_in(xi_n)     # (n,h)
-            for gcb in self.gcbs:
-                hn = gcb(hn, ei)        # (n,h)
-
-            # Union + head
-            hu = torch.cat([hn, hc], dim=1)     # (n,2h)
-            li = self.head(hu)                  # (n,C)
-
-            # pad back to fixed F
-            pad = torch.zeros((F, self.num_classes), device=li.device, dtype=li.dtype)
-            pad[:n] = li
-            logits_all.append(pad)
-
-        logits = torch.stack(logits_all, dim=0)  # (B,F,C)
-        return {"logits": logits}
+        # zero out padded faces for cleaner downstream behavior
+        logits = logits.masked_fill(~valid.unsqueeze(-1), 0.0)
+        return logits

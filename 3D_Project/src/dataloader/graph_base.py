@@ -1,74 +1,40 @@
 # src/dataloader/graph_base.py
 from __future__ import annotations
-from dataclasses import dataclass
-from typing import Dict, Any, List, Tuple
+
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 import hashlib
 
 import numpy as np
 import torch
-
-from src.dataloader.faces_base import FaceConfig
-from src.dataloader.faces_twostream24 import TwoStream24FaceDataset
 
 try:
     from scipy.spatial import cKDTree  # type: ignore
 except Exception:
     cKDTree = None
 
+from src.dataloader.faces_twostream24 import TwoStream24FaceDataset
+from src.dataloader.faces_base import FaceConfig
 
-@dataclass
-class GraphConfig(FaceConfig):
+
+def _unique_edge_index(edges: List[Tuple[int, int]]) -> np.ndarray:
     """
-    Graph config extends FaceConfig:
-      - graph_type: "face_adj" or "knn"
-      - adjacency_mode: "edge" or "vertex"
-      - nonmanifold_policy: "star" or "drop"
-      - add_self_loops: bool
-      - graph_k: for knn
-      - knn_undirected: bool
-      - cache_edge_index: bool
-      - cache_dir: str
-      - max_faces_per_edge/vertex: for non-manifold handling
+    Convert python list[(src,dst)] -> unique edge_index (2,E) as int64.
+    This enforces **binary adjacency** (paper uses binary A).
     """
-    graph_type: str = "face_adj"
-    adjacency_mode: str = "edge"
-    nonmanifold_policy: str = "star"
-    add_self_loops: bool = False
-
-    graph_k: int = 8
-    knn_undirected: bool = True
-
-    cache_edge_index: bool = True
-    cache_dir: str = "cache/edge_index"
-
-    max_faces_per_edge: int = 4
-    max_faces_per_vertex: int = 16
+    if not edges:
+        return np.zeros((2, 0), dtype=np.int64)
+    arr = np.array(edges, dtype=np.int64)  # (E,2)
+    # unique rows
+    arr = np.unique(arr, axis=0)
+    return arr.T  # (2,E)
 
 
-def _unique_undirected_edges(edge_index: np.ndarray) -> np.ndarray:
-    """
-    edge_index: (2,E)
-    return unique undirected edges (2,E2)
-    """
-    if edge_index.size == 0:
+def _add_self_loops_np(edge_index: np.ndarray, num_nodes: int) -> np.ndarray:
+    if num_nodes <= 0:
         return edge_index
-    a = edge_index[0].astype(np.int64, copy=False)
-    b = edge_index[1].astype(np.int64, copy=False)
-    u = np.minimum(a, b)
-    v = np.maximum(a, b)
-    uv = np.stack([u, v], axis=0)  # (2,E)
-    # unique columns
-    uvT = uv.T
-    uvU = np.unique(uvT, axis=0).T
-    return uvU
-
-
-def _add_self_loops(edge_index: np.ndarray, n: int) -> np.ndarray:
-    if n <= 0:
-        return edge_index
-    loops = np.arange(n, dtype=np.int64)
-    loops = np.stack([loops, loops], axis=0)  # (2,n)
+    loops = np.arange(num_nodes, dtype=np.int64)
+    loops = np.stack([loops, loops], axis=0)  # (2,N)
     if edge_index.size == 0:
         return loops
     return np.concatenate([edge_index, loops], axis=1)
@@ -76,95 +42,107 @@ def _add_self_loops(edge_index: np.ndarray, n: int) -> np.ndarray:
 
 def _face_adj_edges_from_mesh(
     faces: np.ndarray,
-    adjacency_mode: str = "edge",
+    *,
+    adjacency_mode: str = "vertex",
     nonmanifold_policy: str = "star",
-    max_faces_per_edge: int = 4,
-    max_faces_per_vertex: int = 16,
+    max_faces_per_edge: int = 0,
+    max_faces_per_vertex: int = 0,
+    add_self_loops: bool = False,
 ) -> np.ndarray:
     """
-    Build face adjacency edges (2,E) based on mesh topology.
-    faces: (F,3)
+    Build face adjacency edges.
 
-    adjacency_mode:
-      - "edge": neighbors share an edge (strongest, sparse)
-      - "vertex": neighbors share a vertex (denser)
+    Paper-like (Fast-TGCN):
+      - adjacency_mode='vertex': two faces are adjacent if they share at least 1 vertex.
+      - adjacency is **binary**.
 
     nonmanifold_policy:
-      - "star": connect all faces in the same incident set (clipped by max_faces_*)
-      - "drop": ignore non-manifold edge/vertex that has too many incident faces
+      - 'drop': if incident list is too large -> drop that structure
+      - 'star': connect all pairs (optionally clipped)
+
+    max_faces_per_*:
+      - <=0 means "no clip"
+      - >0 means clip incident list to that length
     """
     faces = np.asarray(faces, dtype=np.int64)
     F = int(faces.shape[0])
     if F <= 0:
         return np.zeros((2, 0), dtype=np.int64)
 
-    adj_mode = str(adjacency_mode).lower()
-    nm_policy = str(nonmanifold_policy).lower()
+    adj_mode = str(adjacency_mode).lower().strip()
+    nm_policy = str(nonmanifold_policy).lower().strip()
 
-    edges = []
+    edges: List[Tuple[int, int]] = []
 
     if adj_mode == "edge":
-        # build map: undirected edge -> incident faces
-        edge_map: Dict[Tuple[int, int], List[int]] = {}
+        # map undirected edge -> incident faces
+        e_map: Dict[Tuple[int, int], List[int]] = {}
         for fi, (a, b, c) in enumerate(faces):
-            e01 = (int(min(a, b)), int(max(a, b)))
-            e12 = (int(min(b, c)), int(max(b, c)))
-            e20 = (int(min(c, a)), int(max(c, a)))
-            for e in (e01, e12, e20):
-                edge_map.setdefault(e, []).append(fi)
+            tri = (int(a), int(b), int(c))
+            for u, v in ((tri[0], tri[1]), (tri[1], tri[2]), (tri[2], tri[0])):
+                if u <= v:
+                    key = (u, v)
+                else:
+                    key = (v, u)
+                e_map.setdefault(key, []).append(fi)
 
-        for _, inc in edge_map.items():
+        for inc in e_map.values():
+            if len(inc) <= 1:
+                continue
             if len(inc) == 2:
-                i, j = inc
+                i, j = inc[0], inc[1]
                 edges.append((i, j))
                 edges.append((j, i))
-            elif len(inc) > 2:
-                # non-manifold
-                if nm_policy == "drop":
-                    if len(inc) > int(max_faces_per_edge):
-                        continue
-                # "star": connect all pairs (clipped)
-                inc2 = inc[: int(max_faces_per_edge)]
-                for i in inc2:
-                    for j in inc2:
+            else:
+                # non-manifold edge
+                if nm_policy == "drop" and max_faces_per_edge > 0 and len(inc) > int(max_faces_per_edge):
+                    continue
+                if max_faces_per_edge > 0:
+                    inc = inc[: int(max_faces_per_edge)]
+                # connect all ordered pairs i!=j
+                for i in inc:
+                    for j in inc:
                         if i != j:
                             edges.append((i, j))
 
     elif adj_mode == "vertex":
-        # build map: vertex -> incident faces
+        # map vertex -> incident faces
         v_map: Dict[int, List[int]] = {}
         for fi, (a, b, c) in enumerate(faces):
             v_map.setdefault(int(a), []).append(fi)
             v_map.setdefault(int(b), []).append(fi)
             v_map.setdefault(int(c), []).append(fi)
 
-        for _, inc in v_map.items():
+        for inc in v_map.values():
             if len(inc) <= 1:
                 continue
-            if nm_policy == "drop":
-                if len(inc) > int(max_faces_per_vertex):
-                    continue
-            inc2 = inc[: int(max_faces_per_vertex)]
-            for i in inc2:
-                for j in inc2:
+
+            # non-manifold vertex handling
+            if nm_policy == "drop" and max_faces_per_vertex > 0 and len(inc) > int(max_faces_per_vertex):
+                continue
+
+            # clip only if user asks (>0)
+            if max_faces_per_vertex > 0:
+                inc = inc[: int(max_faces_per_vertex)]
+
+            # connect all ordered pairs i!=j (share-vertex adjacency)
+            for i in inc:
+                for j in inc:
                     if i != j:
                         edges.append((i, j))
     else:
         raise ValueError(f"Unknown adjacency_mode='{adjacency_mode}'. Use 'edge' or 'vertex'.")
 
-    if len(edges) == 0:
-        return np.zeros((2, 0), dtype=np.int64)
+    ei = _unique_edge_index(edges)  # enforce binary adjacency
+    if add_self_loops:
+        ei = _add_self_loops_np(ei, F)
+        # make unique again (in case some loops existed)
+        ei = np.unique(ei.T, axis=0).T if ei.size else ei
 
-    ei = np.array(edges, dtype=np.int64).T  # (2,E)
-    return ei
+    return ei.astype(np.int64, copy=False)
 
 
 def _knn_edges(centers: np.ndarray, k: int, undirected: bool = True) -> np.ndarray:
-    """
-    Build kNN edges on face centers.
-    centers: (F,3)
-    return edge_index (2,E)
-    """
     if cKDTree is None:
         raise ImportError("scipy is required for graph_type='knn'. Install: pip install scipy")
 
@@ -190,24 +168,53 @@ def _knn_edges(centers: np.ndarray, k: int, undirected: bool = True) -> np.ndarr
         ei2 = np.stack([dst, src], axis=0)
         ei = np.concatenate([ei, ei2], axis=1)
 
-    return ei
+    # unique for safety
+    ei = np.unique(ei.T, axis=0).T if ei.size else ei
+    return ei.astype(np.int64, copy=False)
 
 
 class GraphDataset(TwoStream24FaceDataset):
     """
     Graph dataset:
-      - inherits TwoStream24FaceDataset to get x/x_c/x_n/y/mask/F_used/...
-      - builds edge_index for each sample (based on topology adjacency or kNN)
-      - collate_graph will keep edge_index as list[Tensor(2,E)] length B
+      - inherits TwoStream24FaceDataset (x/x_c/x_n/y/mask/F_used/faces/pos)
+      - builds edge_index (2,E) per sample
+      - collate_graph keeps edge_index as list[Tensor] length B
     """
+
+    def __init__(self, files: List[str], cfg: FaceConfig):
+        super().__init__(files, cfg)
+        self.gcfg = cfg
+
+        self.graph_type = str(getattr(cfg, "graph_type", "face_adj")).lower().strip()
+        self.adjacency_mode = str(getattr(cfg, "adjacency_mode", "vertex")).lower().strip()
+        self.nonmanifold_policy = str(getattr(cfg, "nonmanifold_policy", "star")).lower().strip()
+
+        # IMPORTANT: paper uses binary adjacency matrix A (includes i=j logically);
+        # we allow adding self-loops here to match A's diagonal.
+        self.add_self_loops = bool(getattr(cfg, "add_self_loops", False))
+
+        self.cache_edge_index = bool(getattr(cfg, "cache_edge_index", True))
+        self.cache_dir = Path(str(getattr(cfg, "cache_dir", "cache/edge_index")))
+        self.max_faces_per_edge = int(getattr(cfg, "max_faces_per_edge", 0))
+        self.max_faces_per_vertex = int(getattr(cfg, "max_faces_per_vertex", 0))
+
+        # for knn only
+        self.k_neighbors = int(getattr(cfg, "k_neighbors", 3))
+
+        if self.cache_edge_index:
+            self.cache_dir.mkdir(parents=True, exist_ok=True)
 
     @classmethod
     def from_config(cls, files: List[str], full_cfg: dict, arch: str):
+        # Reuse TwoStream24FaceDataset config creation, but force mode="graph"
         data = full_cfg["data"]
         num_classes = int(full_cfg["model"]["kwargs"].get("num_classes", 16))
 
-        base = GraphConfig(
-            mode=str(data.get("mode", "graph")),
+        feat = str(data.get("face_feature", "paper24")).lower().strip()
+        default_coord = "absolute" if feat == "paper24" else "relative"
+
+        base = FaceConfig(
+            mode="graph",
             arch=arch,
             normalize=bool(data.get("normalize", True)),
             align_pca=bool(data.get("align_pca", False)),
@@ -215,140 +222,94 @@ class GraphDataset(TwoStream24FaceDataset):
             unknown_policy=str(data.get("unknown_policy", "raise")),
             require_labels=bool(data.get("require_labels", True)),
             num_classes=num_classes,
-
-            # label policy
             label_source=str(data.get("label_source", "auto")),
             face_fallback=str(data.get("face_fallback", "majority")),
-
-            # face sizing / feature
             num_faces=int(data.get("num_faces", 16000)),
-            feature=str(data.get("face_feature", "twostream24")),
-            return_faces=bool(data.get("return_faces", True)),
+            feature=str(data.get("face_feature", "paper24")),
+            return_faces=True,  # must return faces to build topology adjacency
             return_nbr=bool(data.get("return_nbr", False)),
             k_neighbors=int(data.get("k_neighbors", 3)),
-
-            # graph configs
-            graph_type=str(data.get("graph_type", "face_adj")),
-            adjacency_mode=str(data.get("adjacency_mode", "edge")),
-            nonmanifold_policy=str(data.get("nonmanifold_policy", "star")),
-            add_self_loops=bool(data.get("add_self_loops", False)),
-            graph_k=int(data.get("graph_k", 8)),
-            knn_undirected=bool(data.get("knn_undirected", True)),
-            cache_edge_index=bool(data.get("cache_edge_index", True)),
-            cache_dir=str(data.get("cache_dir", "cache/edge_index")),
-            max_faces_per_edge=int(data.get("max_faces_per_edge", 4)),
-            max_faces_per_vertex=int(data.get("max_faces_per_vertex", 16)),
         )
+
+        setattr(base, "twostream_coord_mode", str(data.get("twostream_coord_mode", default_coord)).lower().strip())
+
+        # augmentation flags (same as TwoStream24FaceDataset)
+        setattr(base, "is_train", bool(data.get("is_train", False)))
+        setattr(base, "augment", bool(data.get("augment", False)))
+        setattr(base, "aug_translate", bool(data.get("aug_translate", True)))
+        setattr(base, "aug_rotate_z", bool(data.get("aug_rotate_z", True)))
+        setattr(base, "aug_translate_ranges", data.get("aug_translate_ranges", [[-6, 6], [-8, 8], [-5, 5]]))
+        setattr(base, "aug_rotate_z_range", data.get("aug_rotate_z_range", [-float(np.pi) / 10.0, float(np.pi) / 10.0]))
+
+        # graph params
+        setattr(base, "graph_type", str(data.get("graph_type", "face_adj")).lower().strip())
+        setattr(base, "adjacency_mode", str(data.get("adjacency_mode", "vertex")).lower().strip())
+        setattr(base, "nonmanifold_policy", str(data.get("nonmanifold_policy", "star")).lower().strip())
+        setattr(base, "add_self_loops", bool(data.get("add_self_loops", True)))
+
+        setattr(base, "cache_edge_index", bool(data.get("cache_edge_index", True)))
+        setattr(base, "cache_dir", str(data.get("cache_dir", "cache/edge_index")))
+        setattr(base, "max_faces_per_edge", int(data.get("max_faces_per_edge", 0)))
+        setattr(base, "max_faces_per_vertex", int(data.get("max_faces_per_vertex", 0)))
+
         return cls(files, base)
 
-    def _edge_cache_path(self, ply_path: str, F_used: int) -> Path:
-        p = Path(ply_path)
-        # NOTE: cache key MUST include full path (and size/mtime) to avoid collisions across datasets/folds
-        # where many files may share the same stem (e.g., 0001_U.ply).
-        try:
-            st = p.stat()
-            f_size = int(st.st_size)
-            f_mtime = int(st.st_mtime)
-        except OSError:
-            f_size = -1
-            f_mtime = -1
-        key = {
-            "path": str(p.resolve()),
-            "size": f_size,
-            "mtime": f_mtime,
-            "stem": p.stem,
-            "F": int(F_used),
-            "gt": str(self.gcfg.graph_type).lower(),
-            "am": str(self.gcfg.adjacency_mode).lower(),
-            "nm": str(self.gcfg.nonmanifold_policy).lower(),
-            "mfe": int(self.gcfg.max_faces_per_edge),
-            "mfv": int(self.gcfg.max_faces_per_vertex),
-            "sl": bool(self.gcfg.add_self_loops),
-            "k": int(self.gcfg.graph_k),
-            "und": bool(self.gcfg.knn_undirected),
-        }
-        s = repr(sorted(key.items())).encode("utf-8")
-        h = hashlib.sha1(s).hexdigest()[:12]
-        cache_dir = Path(self.gcfg.cache_dir)
-        cache_dir.mkdir(parents=True, exist_ok=True)
-        return cache_dir / f"{p.stem}_{h}.npz"
-
-    @property
-    def gcfg(self) -> GraphConfig:
-        return self.cfg  # type: ignore[return-value]
-
-    def _build_edge_index(self, faces_used: np.ndarray, centers_used: np.ndarray) -> np.ndarray:
-        gt = str(self.gcfg.graph_type).lower()
-        if gt == "face_adj":
-            ei = _face_adj_edges_from_mesh(
-                faces_used,
-                adjacency_mode=str(self.gcfg.adjacency_mode),
-                nonmanifold_policy=str(self.gcfg.nonmanifold_policy),
-                max_faces_per_edge=int(self.gcfg.max_faces_per_edge),
-                max_faces_per_vertex=int(self.gcfg.max_faces_per_vertex),
-            )
-        elif gt == "knn":
-            ei = _knn_edges(
-                centers_used,
-                k=int(self.gcfg.graph_k),
-                undirected=bool(self.gcfg.knn_undirected),
-            )
-        else:
-            raise ValueError(f"Unknown graph_type='{self.gcfg.graph_type}'. Use 'face_adj' or 'knn'.")
-
-        # unique undirected (optional; keep directed for message passing)
-        if bool(self.gcfg.knn_undirected):
-            # if undirected, we can still keep both directions but remove duplicates
-            ei = _unique_undirected_edges(ei)
-            # expand to directed
-            if ei.size > 0:
-                a = ei[0]
-                b = ei[1]
-                ei = np.concatenate([np.stack([a, b], axis=0), np.stack([b, a], axis=0)], axis=1)
-
-        if bool(self.gcfg.add_self_loops):
-            ei = _add_self_loops(ei, int(centers_used.shape[0]))
-
-        return ei.astype(np.int64, copy=False)
+    def _cache_path(self, mesh_path: str, F_used: int) -> Path:
+        key = (
+            f"{mesh_path}|F={F_used}|"
+            f"{self.graph_type}|{self.adjacency_mode}|{self.nonmanifold_policy}|"
+            f"loop={int(self.add_self_loops)}|"
+            f"mfe={int(self.max_faces_per_edge)}|mfv={int(self.max_faces_per_vertex)}"
+        )
+        h = hashlib.md5(key.encode("utf-8")).hexdigest()
+        stem = Path(mesh_path).stem
+        return self.cache_dir / f"{stem}_{h}.npz"
 
     def __getitem__(self, idx: int) -> Dict[str, Any]:
         out = super().__getitem__(idx)
 
-        # build graph edges only on valid (non-pad) faces
-        F_used = int(out["F_used"])
-        if "faces" not in out:
-            raise KeyError("GraphDataset expects 'faces' in output. Set data.return_faces=true.")
-        faces = out["faces"].numpy().astype(np.int64, copy=False)  # (Fmax,3)
+        faces_t = out.get("faces", None)
+        if faces_t is None:
+            raise ValueError("GraphDataset requires out['faces'] (set return_faces=True).")
 
-        # centers from x_c:
-        # x_c layout depends on coord_mode:
-        # - relative: first 3 dims = center
-        # - absolute: last 3 dims = center
-        x_c = out["x_c"].numpy().astype(np.float32, copy=False)
-        coord_mode = str(out.get("meta", {}).get("twostream_coord_mode", "relative")).lower()
-        if coord_mode in ("rel", "relative"):
-            centers = x_c[:, 0:3]
+        F_used = int(out.get("F_used", int(faces_t.shape[0])))
+        if F_used <= 0:
+            out["edge_index"] = torch.zeros((2, 0), dtype=torch.long)
+            return out
+
+        # build / load cache
+        cache_path = self._cache_path(out["path"], F_used)
+        if self.cache_edge_index and cache_path.exists():
+            data = np.load(str(cache_path))
+            ei_np = data["edge_index"].astype(np.int64, copy=False)
         else:
-            centers = x_c[:, 9:12]
+            faces_np = faces_t[:F_used].detach().cpu().numpy().astype(np.int64, copy=False)
 
-        faces_used = faces[:F_used]
-        centers_used = centers[:F_used]
-
-        # caching
-        if bool(self.gcfg.cache_edge_index):
-            cache_path = self._edge_cache_path(out["path"], F_used)
-            if cache_path.exists():
-                try:
-                    npz = np.load(str(cache_path))
-                    ei = npz["edge_index"].astype(np.int64, copy=False)
-                except Exception:
-                    ei = self._build_edge_index(faces_used, centers_used)
-                    np.savez_compressed(str(cache_path), edge_index=ei)
+            if self.graph_type == "face_adj":
+                ei_np = _face_adj_edges_from_mesh(
+                    faces_np,
+                    adjacency_mode=self.adjacency_mode,
+                    nonmanifold_policy=self.nonmanifold_policy,
+                    max_faces_per_edge=self.max_faces_per_edge,
+                    max_faces_per_vertex=self.max_faces_per_vertex,
+                    add_self_loops=self.add_self_loops,
+                )
+            elif self.graph_type == "knn":
+                centers = out["pos"][:F_used].detach().cpu().numpy().astype(np.float32, copy=False)
+                ei_np = _knn_edges(centers, k=self.k_neighbors, undirected=True)
+                if self.add_self_loops:
+                    ei_np = _add_self_loops_np(ei_np, F_used)
+                    ei_np = np.unique(ei_np.T, axis=0).T if ei_np.size else ei_np
             else:
-                ei = self._build_edge_index(faces_used, centers_used)
-                np.savez_compressed(str(cache_path), edge_index=ei)
-        else:
-            ei = self._build_edge_index(faces_used, centers_used)
+                raise ValueError(f"Unknown graph_type='{self.graph_type}'. Use 'face_adj' or 'knn'.")
 
-        out["edge_index"] = torch.from_numpy(ei)  # (2,E)
+            if self.cache_edge_index:
+                cache_path.parent.mkdir(parents=True, exist_ok=True)
+                np.savez_compressed(str(cache_path), edge_index=ei_np)
+
+        out["edge_index"] = torch.from_numpy(ei_np).long()
+        out["meta"]["graph_type"] = self.graph_type
+        out["meta"]["adjacency_mode"] = self.adjacency_mode
+        out["meta"]["add_self_loops_graph"] = bool(self.add_self_loops)
+        out["meta"]["edge_count"] = int(out["edge_index"].shape[1])
         return out

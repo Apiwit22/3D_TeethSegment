@@ -1,4 +1,4 @@
-#---- ใส่สีให้ฟันแต่ละซี่และเหงือก RGB (หรือ RGBA) "เฉพาะ face" และ merge รวมกันเป็นกรามเดียว ----#
+#---- ใส่สีให้ฟันแต่ละซี่และเหงือก RGB เท่านั้น ในระดับทั้ง vecter/face และ merge รวมกันเป็นกรามเดียว (vertexs-faces) ----#
 from __future__ import annotations
 from pathlib import Path
 import re
@@ -8,18 +8,14 @@ from plyfile import PlyData, PlyElement
 # ============================================================
 # CONFIG (EDIT)
 # ============================================================
-IN_ROOT  = Path(r"D:\Project_Gujabaa\3D_Project\320_fix_resampled")
-OUT_ROOT = Path(r"D:\Project_Gujabaa\3D_Project\320_fix_colored")   # output root for colored+merged parts (will create case subfolders)
+IN_ROOT  = Path(r"D:\Project_Gujabaa\resampled")
+OUT_ROOT = Path(r"D:\Project_Gujabaa\colored_merged")
 
 SAVE_COLORED_PARTS = True
 WRITE_BINARY = False
 
 UPPER_PARTS_DIRNAME = "upper_parts"
 LOWER_PARTS_DIRNAME = "lower_parts"
-
-# --- Face color format ---
-WRITE_ALPHA = True          # ถ้า True => face จะมี alpha ด้วย (เหมือน 007_U.ply)
-DEFAULT_ALPHA = 255         # ค่า alpha ที่จะเขียน
 
 # ============================================================
 # COLOR MAP (RGB 0-255)  >>> RGB ONLY (NO ALPHA)
@@ -46,6 +42,10 @@ GINGIVA_RGB = (255, 180, 200)
 _RE_INTS = re.compile(r"(\d{2,})")
 
 def parse_fdi_from_name(stem_lower: str) -> int | None:
+    """
+    FIX: เดิมจับเลขตัวแรกอย่างเดียว เสี่ยงไปจับ case_id (เช่น 62) แทน 31/41
+    ตอนนี้หาเลขทั้งหมดแล้วเลือกตัวที่อยู่ในช่วง 11-48 และอยู่ใน FDI_RGB
+    """
     matches = _RE_INTS.findall(stem_lower)
     for m in matches:
         try:
@@ -66,6 +66,7 @@ def infer_color_from_file(p: Path) -> tuple[int,int,int]:
     fdi = parse_fdi_from_name(s)
     if fdi is not None:
         return FDI_RGB[fdi]
+    # fallback => gingiva
     return GINGIVA_RGB
 
 def infer_arch_from_path_or_name(p: Path) -> str | None:
@@ -82,25 +83,18 @@ def infer_arch_from_path_or_name(p: Path) -> str | None:
     return None
 
 # ============================================================
-# DTYPE: vertex keeps xyz + normals ONLY (no colors)
-#        face stores vertex_indices + (RGB or RGBA)
+# Build standard vertex/face arrays (FORCE vertex+face RGB ONLY)
 # ============================================================
 VERT_DTYPE = np.dtype([
     ("x", "f4"), ("y", "f4"), ("z", "f4"),
     ("nx", "f4"), ("ny", "f4"), ("nz", "f4"),
+    ("red", "u1"), ("green", "u1"), ("blue", "u1"),
 ])
 
-if WRITE_ALPHA:
-    FACE_DTYPE = np.dtype([
-        ("vertex_indices", "i4", (3,)),
-        ("red", "u1"), ("green", "u1"), ("blue", "u1"),
-        ("alpha", "u1"),
-    ])
-else:
-    FACE_DTYPE = np.dtype([
-        ("vertex_indices", "i4", (3,)),
-        ("red", "u1"), ("green", "u1"), ("blue", "u1"),
-    ])
+FACE_DTYPE = np.dtype([
+    ("vertex_indices", "i4", (3,)),
+    ("red", "u1"), ("green", "u1"), ("blue", "u1"),
+])
 
 def get_vertex_xyz_normals(ply: PlyData) -> tuple[np.ndarray, np.ndarray]:
     v = ply["vertex"].data
@@ -155,14 +149,13 @@ def get_face_indices(ply: PlyData) -> np.ndarray | None:
 def build_colored_elements(in_path: Path) -> tuple[np.ndarray, np.ndarray | None]:
     ply = PlyData.read(str(in_path))
     xyz, nrm = get_vertex_xyz_normals(ply)
-    r, g, b = infer_color_from_file(in_path)
+    r,g,b = infer_color_from_file(in_path)
 
-    # vertex output: keep xyz + normals only
     vout = np.empty((xyz.shape[0],), dtype=VERT_DTYPE)
     vout["x"], vout["y"], vout["z"] = xyz[:,0], xyz[:,1], xyz[:,2]
     vout["nx"], vout["ny"], vout["nz"] = nrm[:,0], nrm[:,1], nrm[:,2]
+    vout["red"], vout["green"], vout["blue"] = r, g, b
 
-    # face output: write color ONLY on face
     tris = get_face_indices(ply)
     if tris is None:
         return vout, None
@@ -170,8 +163,6 @@ def build_colored_elements(in_path: Path) -> tuple[np.ndarray, np.ndarray | None
     fout = np.empty((tris.shape[0],), dtype=FACE_DTYPE)
     fout["vertex_indices"] = tris.astype(np.int32)
     fout["red"], fout["green"], fout["blue"] = r, g, b
-    if WRITE_ALPHA:
-        fout["alpha"] = np.uint8(DEFAULT_ALPHA)
     return vout, fout
 
 def write_ply(path: Path, v: np.ndarray, f: np.ndarray | None):

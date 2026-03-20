@@ -28,8 +28,8 @@ except Exception as e:
 SET2_UPPER_REF = Path(r"D:\Project_Gujabaa\3D_Project\aligned_public_data_recolor\train\007_U.ply")
 SET2_LOWER_REF = Path(r"D:\Project_Gujabaa\3D_Project\aligned_public_data_recolor\train\007_L.ply")
 
-IN_ROOT  = Path(r"D:\Project_Gujabaa\3D_Project\data_part_colored_face")
-OUT_ROOT = Path(r"D:\Project_Gujabaa\3D_Project\aligned_data_part_colored_face")
+IN_ROOT  = Path(r"D:\Project_Gujabaa\3D_Project\All_final_dataset_colored")
+OUT_ROOT = Path(r"D:\Project_Gujabaa\3D_Project\aligned_colored_finaldataset")   # output root for aligned+colored parts (will create case subfolders)
 
 SAMPLE_N = 30000
 SEED = 1234

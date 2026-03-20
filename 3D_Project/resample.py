@@ -11,8 +11,8 @@ import open3d as o3d
 # ============================================================
 # CONFIG (EDIT)
 # ============================================================
-IN_ROOT = Path(r"D:\Project_Gujabaa\scanfile_ply")   # root with case folders, or a single case folder
-OUT_ROOT = Path(r"D:\Project_Gujabaa\resampled")
+IN_ROOT = Path(r"D:\Project_Gujabaa\3D_Project\320_fix")   
+OUT_ROOT = Path(r"D:\Project_Gujabaa\3D_Project\320_fix_resampled")   # output root for resampled parts (will create case subfolders)
 
 TARGET_FACES_PER_ARCH = 16000
 

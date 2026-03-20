@@ -17,22 +17,10 @@ from src.dataloader.faces_base import (
 
 class TwoStream24FaceDataset(BaseDentalDataset):
     """
-    Dataset สำหรับฟีเจอร์ 24D แบบ two-stream (เหมาะกับ TSGCNet / Fast-TGCN)
-
-    นิยามฟีเจอร์ (ต่อ 1 face):
-      - x_c (12D):
-          * absolute: [v0, v1, v2, center]          (ของเดิม)
-          * relative: [center, (v0-center), (v1-center), (v2-center)]  (แนะนำ)
-      - x_n (12D): [n0, n1, n2, n_face]
-      - x  (24D): concat(x_c, x_n)
-
-    หมายเหตุ:
-      - ต้องมี vertex normals (mesh.normals) ให้ครบจำนวน vertex (Nv,3)
-      - labels / ignore_index / label_source / face_fallback ใช้ logic เดียวกับ BaseDentalDataset
-      - Fix จำนวน face ให้เท่ากันทุกไฟล์เหมือน FaceDataset:
-          * mode="graph" -> ตัดหน้าแรกแบบ deterministic (ช่วยให้ topology คงที่)
-          * mode="face"  -> สุ่ม sample (augmentation)
-          * ถ้า F0 < target_F -> PAD + valid_face mask
+    Two-stream 24D per-face features:
+      - x_c (12): absolute [v0,v1,v2,center] OR relative [center, v0-center, v1-center, v2-center]
+      - x_n (12): [n0,n1,n2,n_face]
+      - x   (24): concat(x_c,x_n)
     """
 
     _ALIASES = (
@@ -44,15 +32,12 @@ class TwoStream24FaceDataset(BaseDentalDataset):
         "tgcn24",
         "fast_tgcn_24",
         "paper24",
+        "twostream24_topo",
     )
 
     def __init__(self, files: List[str], cfg: FaceConfig):
         super().__init__(files, cfg)
-
-        # ✅ สำคัญมาก: กัน GraphDataset ไม่มี fcfg
         self.fcfg = cfg
-
-        # default: relative (เรียนง่ายกว่า / ใกล้ MeshSegNet-style)
         self.twostream_coord_mode = str(getattr(cfg, "twostream_coord_mode", "relative")).lower().strip()
 
     @classmethod
@@ -70,7 +55,6 @@ class TwoStream24FaceDataset(BaseDentalDataset):
             require_labels=bool(data.get("require_labels", True)),
             num_classes=num_classes,
 
-            # label policy
             label_source=str(data.get("label_source", "auto")),
             face_fallback=str(data.get("face_fallback", "majority")),
 
@@ -81,9 +65,7 @@ class TwoStream24FaceDataset(BaseDentalDataset):
             k_neighbors=int(data.get("k_neighbors", 3)),
         )
 
-        # ✅ ส่งค่า coord mode ผ่าน cfg (GraphConfig ก็จะได้ default เป็น relative ด้วย)
         setattr(base, "twostream_coord_mode", str(data.get("twostream_coord_mode", "relative")).lower().strip())
-
         return cls(files, base)
 
     def _needs_nbr(self) -> bool:
@@ -105,19 +87,14 @@ class TwoStream24FaceDataset(BaseDentalDataset):
         if F0 <= 0:
             raise ValueError(f"Empty faces in: {path}")
 
-        # ------------------------------------------------------------
-        # Fix จำนวน face ให้เท่ากันทุกไฟล์
-        # ------------------------------------------------------------
         cropped = False
         if F0 >= target_F:
             mode = str(self.cfg.mode).lower()
             if mode == "graph":
-                # graph-mode: ตัดหน้าแรกแบบ deterministic
-                fidx = np.arange(target_F, dtype=np.int64)
+                fidx = np.arange(target_F, dtype=np.int64)  # deterministic for cached topology
                 cropped = (F0 > target_F)
             else:
-                # face-mode: สุ่มเพื่อ augmentation
-                fidx = self.sample_indices(F0, target_F)
+                fidx = self.sample_indices(F0, target_F)    # random for augmentation
                 cropped = (F0 > target_F)
 
             faces = faces_all[fidx]
@@ -132,9 +109,7 @@ class TwoStream24FaceDataset(BaseDentalDataset):
             padded = True
             F_used = F0
 
-        # ------------------------------------------------------------
-        # labels (ใช้ policy ใน base.py)
-        # ------------------------------------------------------------
+        # labels
         if not self.cfg.require_labels:
             y_all = np.full((F0,), int(self.cfg.ignore_index), dtype=np.int64)
             gt_source = "disabled(require_labels=false)"
@@ -145,25 +120,20 @@ class TwoStream24FaceDataset(BaseDentalDataset):
                 gt_source = "vertex_fallback"
             else:
                 gt_source = "missing_colors"
-            y_all = self.get_labels_for_mode(mesh, arch)  # (F0,)
+            y_all = self.get_labels_for_mode(mesh, arch)
 
         y = y_all[fidx] if fidx is not None else y_all
         y = y.astype(np.int64, copy=False)
 
-        # ------------------------------------------------------------
-        # features (two-stream 24D)
-        # ------------------------------------------------------------
-        feat_name = str(self.fcfg.feature).lower()
+        feat_name = str(self.fcfg.feature).lower().strip()
         if feat_name not in self._ALIASES:
             raise ValueError(
-                f"faces_twostream24.py รองรับ face_feature ในชุด {self._ALIASES} เท่านั้น "
-                f"(ตอนนี้ได้ '{self.fcfg.feature}')."
+                f"faces_twostream24.py supports {self._ALIASES}, got '{self.fcfg.feature}'."
             )
 
         centers = face_centers(pos_v, faces).astype(np.float32, copy=False)   # (F,3)
         fn_face = face_normals(pos_v, faces).astype(np.float32, copy=False)  # (F,3)
 
-        # coords stream (12D)
         v0 = pos_v[faces[:, 0]]
         v1 = pos_v[faces[:, 1]]
         v2 = pos_v[faces[:, 2]]
@@ -173,34 +143,25 @@ class TwoStream24FaceDataset(BaseDentalDataset):
             dv0 = (v0 - centers).astype(np.float32, copy=False)
             dv1 = (v1 - centers).astype(np.float32, copy=False)
             dv2 = (v2 - centers).astype(np.float32, copy=False)
-            x_c = np.concatenate([centers, dv0, dv1, dv2], axis=1).astype(np.float32, copy=False)  # (F,12)
+            x_c = np.concatenate([centers, dv0, dv1, dv2], axis=1).astype(np.float32, copy=False)
         else:
-            x_c = np.concatenate([v0, v1, v2, centers], axis=1).astype(np.float32, copy=False)  # (F,12)
+            x_c = np.concatenate([v0, v1, v2, centers], axis=1).astype(np.float32, copy=False)
 
-        # normals stream (12D)
         if mesh.normals is None or mesh.normals.shape[0] != pos_v.shape[0]:
-            raise ValueError(
-                f"ต้องมี vertex normals (Nv,3) สำหรับ two-stream 24D แต่ไฟล์นี้ไม่มี/ไม่ครบ: {path}"
-            )
-        vn_all = mesh.normals.astype(np.float32, copy=False)  # (Nv,3)
+            raise ValueError(f"Need vertex normals (Nv,3) for two-stream 24D: {path}")
+        vn_all = mesh.normals.astype(np.float32, copy=False)
         n0 = vn_all[faces[:, 0]]
         n1 = vn_all[faces[:, 1]]
         n2 = vn_all[faces[:, 2]]
-        x_n = np.concatenate([n0, n1, n2, fn_face], axis=1).astype(np.float32, copy=False)  # (F,12)
+        x_n = np.concatenate([n0, n1, n2, fn_face], axis=1).astype(np.float32, copy=False)
 
-        x = np.concatenate([x_c, x_n], axis=1).astype(np.float32, copy=False)  # (F,24)
+        x = np.concatenate([x_c, x_n], axis=1).astype(np.float32, copy=False)
 
-        # ---- optional nbr (debug/legacy)
         if self._needs_nbr():
-            nbr: Optional[np.ndarray] = build_face_neighbors(faces, k=int(self.fcfg.k_neighbors)).astype(
-                np.int64, copy=False
-            )
+            nbr: Optional[np.ndarray] = build_face_neighbors(faces, k=int(self.fcfg.k_neighbors)).astype(np.int64, copy=False)
         else:
             nbr = None
 
-        # ------------------------------------------------------------
-        # PAD to fixed target_F (if needed)
-        # ------------------------------------------------------------
         if padded:
             x_pad = np.zeros((target_F, 24), dtype=np.float32)
             y_pad = np.full((target_F,), int(self.cfg.ignore_index), dtype=np.int64)
@@ -228,29 +189,26 @@ class TwoStream24FaceDataset(BaseDentalDataset):
                     nbr_pad[i, :] = i
                 nbr = nbr_pad
 
-        # ------------------------------------------------------------
-        # masks
-        # ------------------------------------------------------------
         ign = int(self.cfg.ignore_index)
         mask = valid & (y != ign)
 
         out: Dict[str, Any] = {
-            "x": torch.from_numpy(x),                                   # (F,24)
-            "x_c": torch.from_numpy(x_c),                               # (F,12)
-            "x_n": torch.from_numpy(x_n),                               # (F,12)
-            "y": torch.from_numpy(y),                                   # (F,)
-            "mask": torch.from_numpy(mask.astype(np.bool_)),            # (F,)
-            "valid_face": torch.from_numpy(valid.astype(np.bool_)),     # (F,)
+            "x": torch.from_numpy(x),
+            "x_c": torch.from_numpy(x_c),
+            "x_n": torch.from_numpy(x_n),
+            "y": torch.from_numpy(y),
+            "mask": torch.from_numpy(mask.astype(np.bool_)),
+            "valid_face": torch.from_numpy(valid.astype(np.bool_)),
             "F_used": int(F_used),
             "arch": arch,
             "path": path,
-            "pos": torch.from_numpy(centers),                           # (F,3) centers
+            "pos": torch.from_numpy(centers),
             "meta": {
                 **mesh.meta,
                 "mode": str(self.cfg.mode).lower(),
                 "arch": arch,
                 "gt_source": gt_source,
-                "face_feature": "twostream24",
+                "face_feature": feat_name,          # ✅ not hardcoded
                 "twostream_coord_mode": coord_mode,
                 "F_raw": int(F0),
                 "F_used": int(F_used),
@@ -267,7 +225,6 @@ class TwoStream24FaceDataset(BaseDentalDataset):
 
         if bool(self.fcfg.return_faces):
             out["faces"] = torch.from_numpy(faces.astype(np.int64, copy=False))
-
         if nbr is not None:
             out["nbr"] = torch.from_numpy(nbr.astype(np.int64, copy=False))
 

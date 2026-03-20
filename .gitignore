@@ -23,6 +23,16 @@ __pycache__/
 3D_Project/*.egg-info/
 3D_Project/iosseg3d.egg-info/
 3D_Project/src/iosseg3d.egg-info/
+3D_Project/vis_final/
+3D_Project/All_final_dataset/
+3D_Project/All_final_dataset_colored/
+3D_Project/All_final_dataset_resampled/
+3D_Project/FinalDataset_Split/
+3D_Project/aligned_colored_finaldataset/
+3D_Project/cache/
+3D_Project/*debug*/
+3D_Project/check_*.py
+3D_Project/debug_*.py
 
 3D_Project/mesh_label_colorizer/data/colored_ready
 3D_Project/mesh_label_colorizer/data/labels_remap
@@ -43,5 +53,5 @@ __pycache__/
 app_dental/dist/
 app_dental/build/
 
-
+git
 
