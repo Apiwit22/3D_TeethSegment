@@ -272,27 +272,48 @@ presets:
 
     do_postprocess: true
     pp_mode: best_visual
-    pp_knn_k: 14
-    pp_conf_thresh: 0.58
+    pp_knn_k: 12
+    pp_conf_thresh: 0.64
     pp_conf_neighbor_iters: 1
-    pp_min_comp_size: 25
+    pp_min_comp_size: 34
     pp_clean_iters: 1
-    pp_smooth_iters: 1
-    pp_ungingiva_margin: 0.04
-    pp_ungingiva_min_tooth_p: 0.10
+    pp_smooth_iters: 2
+    pp_ungingiva_margin: 0.055
+    pp_ungingiva_min_tooth_p: 0.14
     pp_keep_gingiva_lcc: true
 
     pp_remove_tooth_islands_enabled: true
     pp_remove_tooth_islands_iters: 2
-    pp_remove_tooth_islands_max_region_size: 18
-    pp_remove_tooth_islands_min_gingiva_support: 4
-    pp_remove_tooth_islands_dominance: 0.60
+    pp_remove_tooth_islands_max_region_size: 8
+    pp_remove_tooth_islands_min_gingiva_support: 5
+    pp_remove_tooth_islands_dominance: 0.78
+    pp_remove_tooth_islands_max_mean_label_prob: 0.54
+    pp_remove_tooth_islands_max_mean_max_prob: 0.66
+
+    pp_merge_foreign_islands_enabled: true
+    pp_merge_foreign_islands_iters: 2
+    pp_merge_foreign_islands_max_region_size: 8
+    pp_merge_foreign_islands_min_boundary_support: 4
+    pp_merge_foreign_islands_dominance: 0.80
+    pp_merge_foreign_islands_max_mean_label_prob: 0.56
+    pp_merge_foreign_islands_max_mean_max_prob: 0.68
+    pp_merge_foreign_islands_allow_to_gingiva: false
+
+    pp_relabel_boundary_bleeding_enabled: true
+    pp_relabel_boundary_bleeding_iters: 2
+    pp_relabel_boundary_bleeding_max_region_size: 36
+    pp_relabel_boundary_bleeding_min_boundary_support: 5
+    pp_relabel_boundary_bleeding_dominance: 0.70
+    pp_relabel_boundary_bleeding_max_mean_label_prob: 0.62
+    pp_relabel_boundary_bleeding_max_mean_max_prob: 0.74
+    pp_relabel_boundary_bleeding_min_mean_target_prob: 0.22
+    pp_relabel_boundary_bleeding_allow_to_gingiva: false
 
     pp_close_gap_enabled: true
     pp_close_gap_iters: 1
     pp_close_gap_min_support: 4
-    pp_close_gap_dominance: 0.76
-    pp_close_gap_max_region_size: 4
+    pp_close_gap_dominance: 0.82
+    pp_close_gap_max_region_size: 3
 
     ckpts:
       - models/builtin/pointnetpp_final/upper/dataset1_best.pth
@@ -344,6 +365,27 @@ presets:
     pp_remove_tooth_islands_max_region_size: 18
     pp_remove_tooth_islands_min_gingiva_support: 4
     pp_remove_tooth_islands_dominance: 0.60
+    pp_remove_tooth_islands_max_mean_label_prob: 0.54
+    pp_remove_tooth_islands_max_mean_max_prob: 0.66
+
+    pp_merge_foreign_islands_enabled: true
+    pp_merge_foreign_islands_iters: 2
+    pp_merge_foreign_islands_max_region_size: 8
+    pp_merge_foreign_islands_min_boundary_support: 4
+    pp_merge_foreign_islands_dominance: 0.80
+    pp_merge_foreign_islands_max_mean_label_prob: 0.56
+    pp_merge_foreign_islands_max_mean_max_prob: 0.68
+    pp_merge_foreign_islands_allow_to_gingiva: false
+
+    pp_relabel_boundary_bleeding_enabled: true
+    pp_relabel_boundary_bleeding_iters: 2
+    pp_relabel_boundary_bleeding_max_region_size: 36
+    pp_relabel_boundary_bleeding_min_boundary_support: 5
+    pp_relabel_boundary_bleeding_dominance: 0.70
+    pp_relabel_boundary_bleeding_max_mean_label_prob: 0.62
+    pp_relabel_boundary_bleeding_max_mean_max_prob: 0.74
+    pp_relabel_boundary_bleeding_min_mean_target_prob: 0.22
+    pp_relabel_boundary_bleeding_allow_to_gingiva: false
 
     pp_close_gap_enabled: true
     pp_close_gap_iters: 1
@@ -423,44 +465,54 @@ presets:
     do_postprocess: true
     pp_mode: best_visual
     pp_knn_k: 10
-    pp_conf_thresh: 0.67
+    pp_conf_thresh: 0.69
     pp_conf_neighbor_iters: 1
-    pp_min_comp_size: 50
+    pp_min_comp_size: 54
     pp_clean_iters: 1
     pp_smooth_iters: 0
-    pp_ungingiva_margin: 0.06
-    pp_ungingiva_min_tooth_p: 0.16
+    pp_ungingiva_margin: 0.075
+    pp_ungingiva_min_tooth_p: 0.18
     pp_keep_gingiva_lcc: true
 
     pp_remove_tooth_islands_enabled: true
-    pp_remove_tooth_islands_iters: 2
-    pp_remove_tooth_islands_max_region_size: 8
-    pp_remove_tooth_islands_min_gingiva_support: 4
-    pp_remove_tooth_islands_dominance: 0.82
-    pp_remove_tooth_islands_max_mean_label_prob: 0.56
-    pp_remove_tooth_islands_max_mean_max_prob: 0.68
+    pp_remove_tooth_islands_iters: 3
+    pp_remove_tooth_islands_max_region_size: 10
+    pp_remove_tooth_islands_min_gingiva_support: 5
+    pp_remove_tooth_islands_dominance: 0.84
+    pp_remove_tooth_islands_max_mean_label_prob: 0.54
+    pp_remove_tooth_islands_max_mean_max_prob: 0.66
 
     pp_merge_foreign_islands_enabled: true
-    pp_merge_foreign_islands_iters: 2
-    pp_merge_foreign_islands_max_region_size: 8
-    pp_merge_foreign_islands_min_boundary_support: 4
-    pp_merge_foreign_islands_dominance: 0.82
-    pp_merge_foreign_islands_max_mean_label_prob: 0.56
-    pp_merge_foreign_islands_max_mean_max_prob: 0.68
+    pp_merge_foreign_islands_iters: 3
+    pp_merge_foreign_islands_max_region_size: 12
+    pp_merge_foreign_islands_min_boundary_support: 5
+    pp_merge_foreign_islands_dominance: 0.84
+    pp_merge_foreign_islands_max_mean_label_prob: 0.54
+    pp_merge_foreign_islands_max_mean_max_prob: 0.66
     pp_merge_foreign_islands_allow_to_gingiva: false
+
+    pp_relabel_boundary_bleeding_enabled: true
+    pp_relabel_boundary_bleeding_iters: 3
+    pp_relabel_boundary_bleeding_max_region_size: 72
+    pp_relabel_boundary_bleeding_min_boundary_support: 5
+    pp_relabel_boundary_bleeding_dominance: 0.66
+    pp_relabel_boundary_bleeding_max_mean_label_prob: 0.66
+    pp_relabel_boundary_bleeding_max_mean_max_prob: 0.76
+    pp_relabel_boundary_bleeding_min_mean_target_prob: 0.20
+    pp_relabel_boundary_bleeding_allow_to_gingiva: false
 
     pp_close_gap_enabled: true
     pp_close_gap_iters: 1
     pp_close_gap_min_support: 4
-    pp_close_gap_dominance: 0.84
+    pp_close_gap_dominance: 0.86
     pp_close_gap_max_region_size: 2
 
     ckpts:
-      - models/builtin/tsmdl_final/lower/dataset1_best.pth
-      - models/builtin/tsmdl_final/lower/dataset2_best.pth
-      - models/builtin/tsmdl_final/lower/dataset3_best.pth
-      - models/builtin/tsmdl_final/lower/dataset4_best.pth
-      - models/builtin/tsmdl_final/lower/dataset5_best.pth
+      - models/builtin/tsmdl/lower/dataset1_best.pth
+      - models/builtin/tsmdl/lower/dataset2_best.pth
+      - models/builtin/tsmdl/lower/dataset3_best.pth
+      - models/builtin/tsmdl/lower/dataset4_best.pth
+      - models/builtin/tsmdl/lower/dataset5_best.pth
 
   # =========================================================
   # Fast-TGCN (Graph / Face-style export)
@@ -763,28 +815,47 @@ presets:
     do_postprocess: true
     pp_mode: best_visual
     pp_knn_k: 11
-    pp_conf_thresh: 0.68
+    pp_conf_thresh: 0.69
     pp_conf_neighbor_iters: 1
-    pp_min_comp_size: 50
+    pp_min_comp_size: 54
     pp_clean_iters: 1
-    pp_smooth_iters: 0
-    pp_ungingiva_margin: 0.07
-    pp_ungingiva_min_tooth_p: 0.18
+    pp_smooth_iters: 1
+    pp_ungingiva_margin: 0.12
+    pp_ungingiva_min_tooth_p: 0.30
     pp_keep_gingiva_lcc: true
 
     pp_remove_tooth_islands_enabled: true
-    pp_remove_tooth_islands_iters: 3
-    pp_remove_tooth_islands_max_region_size: 16
-    pp_remove_tooth_islands_min_gingiva_support: 3
-    pp_remove_tooth_islands_dominance: 0.76
-    pp_remove_tooth_islands_max_mean_label_prob: 0.66
-    pp_remove_tooth_islands_max_mean_max_prob: 0.74
+    pp_remove_tooth_islands_iters: 4
+    pp_remove_tooth_islands_max_region_size: 32
+    pp_remove_tooth_islands_min_gingiva_support: 7
+    pp_remove_tooth_islands_dominance: 0.88
+    pp_remove_tooth_islands_max_mean_label_prob: 0.50
+    pp_remove_tooth_islands_max_mean_max_prob: 0.62
+
+    pp_merge_foreign_islands_enabled: true
+    pp_merge_foreign_islands_iters: 2
+    pp_merge_foreign_islands_max_region_size: 14
+    pp_merge_foreign_islands_min_boundary_support: 4
+    pp_merge_foreign_islands_dominance: 0.84
+    pp_merge_foreign_islands_max_mean_label_prob: 0.60
+    pp_merge_foreign_islands_max_mean_max_prob: 0.72
+    pp_merge_foreign_islands_allow_to_gingiva: false
+
+    pp_relabel_boundary_bleeding_enabled: true
+    pp_relabel_boundary_bleeding_iters: 3
+    pp_relabel_boundary_bleeding_max_region_size: 64
+    pp_relabel_boundary_bleeding_min_boundary_support: 5
+    pp_relabel_boundary_bleeding_dominance: 0.66
+    pp_relabel_boundary_bleeding_max_mean_label_prob: 0.64
+    pp_relabel_boundary_bleeding_max_mean_max_prob: 0.76
+    pp_relabel_boundary_bleeding_min_mean_target_prob: 0.18
+    pp_relabel_boundary_bleeding_allow_to_gingiva: false
 
     pp_close_gap_enabled: true
     pp_close_gap_iters: 1
     pp_close_gap_min_support: 5
-    pp_close_gap_dominance: 0.86
-    pp_close_gap_max_region_size: 2
+    pp_close_gap_dominance: 0.84
+    pp_close_gap_max_region_size: 6
 
     ckpts:
       - models/builtin/tsmdl_final/upper/dataset1_best.pth

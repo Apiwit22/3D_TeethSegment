@@ -164,8 +164,10 @@ class StartLikeTab(QWidget):
     def _populate_model_combos(self) -> None:
         keys = list(self.mainwin.registry.keys())
 
-        # hide legacy tsmdl presets from UI
-        hidden = {"tsmdl_upper", "tsmdl_lower"}
+        hidden = {
+            "tsmdl_upper", "tsmdl_lower",
+            "pointnetpp_upper", "pointnetpp_lower",
+        }
 
         upper_opts = sorted(
             [k for k in keys if k.endswith("_upper") and k not in hidden]

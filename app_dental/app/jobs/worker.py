@@ -39,9 +39,13 @@ class InferenceWorker(QThread):
             reg = Registry(self.app_root / "registry.yaml").load()
             preset = reg.get(self.preset_key)
 
+            blocked = {"pointnetpp_upper", "pointnetpp_lower"}
+            if preset.key in blocked:
+                raise RuntimeError(f"Preset '{preset.key}' is disabled")
+
             self.signals.log.emit(
                 f"Start preset={preset.key} | runner={preset.runner} | arch={preset.arch} | device={self.device}"
-            )
+        )
             self.signals.progress.emit(5)
 
             pipe = Pipeline(app_root=self.app_root, preset=preset, device=self.device)

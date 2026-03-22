@@ -5,12 +5,6 @@ from typing import Dict, List, Tuple
 import numpy as np
 from PySide6.QtCore import QTimer
 
-from app.core.result_alignment import (
-    align_upper_to_lower_multihyp,
-    canonicalize_pose,
-    close_bite_by_z,
-    sample_teeth_points,
-)
 from app.data.color_map import label_array_to_rgb_face
 from app.ui.widgets.layer_panel import LayerInfo
 from app.ui.widgets.result_tabs import PerTabResultWidget, StartLikeTab
@@ -34,6 +28,17 @@ class ResultPresenter:
         except Exception:
             return {"GINGIVA": (200, 200, 200)}
 
+    def _display_pos(self, res) -> np.ndarray:
+        try:
+            v = res.meta.get("display_vertices", None)
+            if v is not None:
+                vv = np.asarray(v, dtype=np.float32)
+                if vv.ndim == 2 and vv.shape[1] == 3 and vv.shape[0] == len(res.mesh_proc.pos):
+                    return vv.copy()
+        except Exception:
+            pass
+        return np.asarray(res.mesh_proc.pos, dtype=np.float32).copy()
+
     def show(self) -> None:
         mw = self.mainwin
         mw.stack.setCurrentWidget(mw.page_result)
@@ -44,62 +49,11 @@ class ResultPresenter:
 
         if mw.res_lower is not None:
             res = mw.res_lower
-            posL = canonicalize_pose(
-                res.mesh_proc.pos,
-                "lower",
-                faces=res.mesh_proc.faces,
-                labels_face=getattr(res, "labels_face", None),
-                num_classes=int(getattr(res, "num_classes", 0) or 0),
-            )
+            posL = self._display_pos(res)
 
         if mw.res_upper is not None:
             res = mw.res_upper
-            posU = canonicalize_pose(
-                res.mesh_proc.pos,
-                "upper",
-                faces=res.mesh_proc.faces,
-                labels_face=getattr(res, "labels_face", None),
-                num_classes=int(getattr(res, "num_classes", 0) or 0),
-            )
-
-        if posL is not None and posU is not None:
-            resL = mw.res_lower
-            resU = mw.res_upper
-
-            posU = align_upper_to_lower_multihyp(
-                posU=posU,
-                posL=posL,
-                facesU=resU.mesh_proc.faces,
-                facesL=resL.mesh_proc.faces,
-                labelsU=getattr(resU, "labels_face", None),
-                labelsL=getattr(resL, "labels_face", None),
-                numcU=int(getattr(resU, "num_classes", 0) or 0),
-                numcL=int(getattr(resL, "num_classes", 0) or 0),
-            )
-
-            ptsL = sample_teeth_points(
-                posL,
-                resL.mesh_proc.faces,
-                getattr(resL, "labels_face", None),
-                int(getattr(resL, "num_classes", 0) or 0),
-                n_samples=3500,
-            )
-            ptsU = sample_teeth_points(
-                posU,
-                resU.mesh_proc.faces,
-                getattr(resU, "labels_face", None),
-                int(getattr(resU, "num_classes", 0) or 0),
-                n_samples=3500,
-            )
-
-            posU = close_bite_by_z(
-                posU,
-                posL,
-                upper_teeth_pts=ptsU,
-                lower_teeth_pts=ptsL,
-                target_gap=0.5,
-                safety=0.15,
-            )
+            posU = self._display_pos(res)
 
         if isinstance(owner, StartLikeTab):
             self._show_per_tab_result(owner, posU, posL)
@@ -176,8 +130,7 @@ class ResultPresenter:
             except Exception:
                 pass
 
-            cam_center = self._compute_center(posU, posL)
-            mw._set_result_camera_side(center=cam_center)
+            viewer.set_view("front")
 
         QTimer.singleShot(0, _render_later)
         QTimer.singleShot(50, _render_later)
@@ -185,13 +138,11 @@ class ResultPresenter:
     def _show_global_result(self, posU, posL) -> None:
         mw = self.mainwin
 
-        # ensure global result tab exists even if user closed Tab 1 before
         idx_result = mw.tab_manager.ensure_global_result_tab()
         mw.tabs.setCurrentIndex(idx_result)
         mw.tab_manager.set_layers_visible(True)
 
         viewer = mw.viewer_result
-
         layers: List[LayerInfo] = []
 
         if mw.res_lower is not None and posL is not None:
@@ -202,7 +153,7 @@ class ResultPresenter:
                     name=f"{case_id}_lower",
                     mesh_path=mw.mesh_lower,
                     n_verts=int(len(res.mesh_proc.pos)),
-                        n_faces=int(len(res.mesh_proc.faces)),
+                    n_faces=int(len(res.mesh_proc.faces)),
                     arch="lower",
                     palette=self.palette_for_arch("lower"),
                 )
@@ -257,8 +208,7 @@ class ResultPresenter:
             except Exception:
                 pass
 
-            cam_center = self._compute_center(posU, posL)
-            mw._set_result_camera_side(center=cam_center)
+            viewer.set_view("front")
 
         QTimer.singleShot(0, _render_later)
         QTimer.singleShot(50, _render_later)
