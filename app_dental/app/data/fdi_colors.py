@@ -77,8 +77,8 @@ FDI_TO_RGB: Dict[int, RGB] = {v: k for k, v in RGB_TO_FDI.items()}
 # Upper: 11..18 + 21..28
 # Lower: 31..38 + 41..48
 # ============================================================
-FDI_LIST_UPPER_16 = [21, 22, 23, 24, 25, 26, 27, 28, 11, 12, 13, 14, 15, 16, 17, 18]
-FDI_LIST_LOWER_16 = [41, 42, 43, 44, 45, 46, 47, 48, 31, 32, 33, 34, 35, 36, 37, 38]
+FDI_LIST_UPPER_16 = [11, 12, 13, 14, 15, 16, 17, 18, 21, 22, 23, 24, 25, 26, 27, 28]
+FDI_LIST_LOWER_16 = [31, 32, 33, 34, 35, 36, 37, 38, 41, 42, 43, 44, 45, 46, 47, 48]
 
 LABEL16_TO_FDI_UPPER = {i: fdi for i, fdi in enumerate(FDI_LIST_UPPER_16)}
 LABEL16_TO_FDI_LOWER = {i: fdi for i, fdi in enumerate(FDI_LIST_LOWER_16)}

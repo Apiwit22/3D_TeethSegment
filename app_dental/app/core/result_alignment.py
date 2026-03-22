@@ -85,8 +85,8 @@ def canonicalize_pose(
 
     # คง heuristic เดิมไว้ก่อน
     # ถ้ายังมีเคสกลับซ้าย-ขวาอีก ค่อยมา tighten logic ตรงนี้ต่อ
-    if y_iqr(right_band) > y_iqr(left_band):
-        xr[:, 0] *= -1
+    #if y_iqr(right_band) > y_iqr(left_band):
+    #    xr[:, 0] *= -1
 
     z_use = xr[:, 2]
     if faces is not None and labels_face is not None and int(num_classes) > 0:
@@ -354,4 +354,40 @@ def close_bite_by_z(
         dz = float(np.percentile(U[:, 2], 2) - min_allowed_upper_bottom)
 
     U[:, 2] -= dz
+    return U.astype(np.float32)
+
+def align_upper_to_lower_xy_only(
+    posU: np.ndarray,
+    posL: np.ndarray,
+    facesU: np.ndarray,
+    facesL: np.ndarray,
+    labelsU: Optional[np.ndarray],
+    labelsL: Optional[np.ndarray],
+    numcU: int,
+    numcL: int,
+    *,
+    n_samples: int = 3000,
+    seed: int = 1234,
+) -> np.ndarray:
+    """
+    จัด upper ให้ตรง lower ด้วย translation อย่างเดียวในแกน X,Y
+    ไม่หมุน ไม่ mirror ไม่ ICP
+    """
+    U = np.asarray(posU, dtype=np.float64).copy()
+    L = np.asarray(posL, dtype=np.float64)
+
+    ptsL = sample_teeth_points(L, facesL, labelsL, numcL, n_samples=n_samples, seed=seed)
+    ptsU = sample_teeth_points(U, facesU, labelsU, numcU, n_samples=n_samples, seed=seed + 1)
+
+    if ptsL.size == 0 or ptsU.size == 0:
+        return U.astype(np.float32)
+
+    cL = np.median(ptsL, axis=0)
+    cU = np.median(ptsU, axis=0)
+
+    dx = float(cL[0] - cU[0])
+    dy = float(cL[1] - cU[1])
+
+    U[:, 0] += dx
+    U[:, 1] += dy
     return U.astype(np.float32)

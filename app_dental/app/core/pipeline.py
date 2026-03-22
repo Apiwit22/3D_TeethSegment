@@ -195,6 +195,12 @@ class Pipeline:
         v = np.asarray(rr.vertices, dtype=np.float32)
         f = np.asarray(rr.faces, dtype=np.int64)
 
+        # IMPORTANT:
+        # keep remeshed vertices BEFORE orient so result view can render
+        # in the original imported pose while preserving remeshed topology.
+        v_display = v.copy()
+        meta["display_vertices"] = v_display.astype(np.float32, copy=False)
+
         set_progress(32)
 
         # 3) orient to reference
